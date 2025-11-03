@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WIRED — Periodical Logo (every minute)</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{display:block}
+</style>
+<!-- Same favicon -->
+<link rel="icon" type="image/png" href="favicon.png">
+</head>
+<body>
+
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
+<script>
+/* ========== GRID / FIT ========== */
+const GRID_COLS = 50, GRID_ROWS = 24;
+const MARGIN_X = 4, MARGIN_Y = 4;
+let LETTER_SCALE = 1.0;
+const SCALE_CAP  = 1.0;
+
+/* ========== MOTION ========== */
+/* change interval here — one minute */
+const DEV_INTERVAL_MS = 60000;
+let MOVEMENT_ENABLED = false;
+let STARTED = false;
+
+/* bounds */
+const MAX_DEVIATION=2, R_LEG_STEP=1, R_LEG_MAX_DEV=3;
+
+/* ========== DRAW STYLE ========== */
+const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=128;
+const ANCHOR_SIZE=8, ANCHOR_ALPHA=255;
+const STROKE_W=3;
+const FAN_W=1.2;
+const EASING=0.12;
+
+/* trails */
+const TRAIL_SAMPLE_CAP = 120;      // cap samples kept per segment trail (visual length)
+
+/* caches */
+let E_LEN={top:0,mid:0,bot:0};
+const E_OVERHANG=2;
+
+/* NEW: enforce minimum span for E bars (in grid cells) */
+const MIN_E_SPAN = 3;
+
+/* RNG */
+function salt32(){ if(crypto?.getRandomValues){const a=new Uint32Array(1);crypto.getRandomValues(a);return a[0]>>>0;} return (Math.random()*0xFFFFFFFF)>>>0; }
+const SESSION_SALT=salt32();
+function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+let rand=mulberry32(1);
+function reseed(n){ rand=mulberry32(((n>>>0)^SESSION_SALT)>>>0||1); }
+
+/* helpers */
+function cw(){ return width /(GRID_COLS-1||1); }
+function ch(){ return height/(GRID_ROWS-1||1); }
+function gridToPx(gx,gy){ const o=(gy%2===1)?cw()/2:0; return {x:gx*cw()+o,y:gy*ch()}; }
+/* inverse of gridToPx for x (same row/gy) */
+function pxToGridX(x,gy){ const o=(gy%2===1)?cw()/2:0; return Math.round((x - o)/cw()); }
+function bounds(pts){ const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]); return {minX:Math.min(...xs),maxX:Math.max(...xs),minY:Math.min(...ys),maxY:Math.max(...ys)}; }
+
+const LETTER_SPACING={
+  W:{minX:0,maxX:9},
+  I:{minX:11,maxX:14},
+  R:{minX:16,maxX:24},
+  E:{minX:26,maxX:33},
+  D:{minX:35,maxX:43},
+};
+const E_SHIFT=-2; LETTER_SPACING.E.minX+=E_SHIFT; LETTER_SPACING.E.maxX+=E_SHIFT;
+const D_SHIFT=-2; LETTER_SPACING.D.minX+=D_SHIFT; LETTER_SPACING.D.maxX+=D_SHIFT;
+
+const LOCAL={
+  w0:[0,0],w1:[2,10],w2:[4.5,5],w3:[7,10],w4:[9,0],
+  iTop:[12.5,0],iBot:[12.5,10], iTopL:[11,0],iTopR:[14,0], iBotL:[11,10],iBotR:[14,10],
+  rTop:[17,0],rBot:[17,10],rMid:[17,5], rBowlTop:[18,1],rBowlBot:[19,4], rLegBot:[23,10],
+  eLTop:[27,0],eRTop:[33,0], eLBot:[27,10],eRBot:[33,10], eLMid:[27,5],eRMid:[32,5],
+  dStemTop:[36,0],dStemBot:[36,10], dA:[37,1],dB:[37,9]
+};
+const CANON={
+  w0:[0,0],w1:[2,10],w2:[4.5,5],w3:[7,10],w4:[9,0],
+  iTop:[12.5,0],iBot:[12.5,10], iTopL:[11.5,0],iTopR:[13.5,0], iBotL:[11.5,10],iBotR:[13.5,10],
+  rTop:[17,0],rBot:[17,10],rMid:[17,5], rBowlTop:[17,0],rBowlBot:[19,3], rLegBot:[22,10],
+  eLTop:[27,0],eRTop:[31,0], eLBot:[27,10],eRBot:[31,10], eLMid:[27,5],eRMid:[30,5],
+  dStemTop:[36,0],dStemBot:[36,10], dA:[37,1],dB:[37,9]
+};
+
+function computeBestScale(){
+  const cellsW=(GRID_COLS-1)-2*MARGIN_X, cellsH=(GRID_ROWS-1)-2*MARGIN_Y;
+  function sizeFor(map){ const pts=Object.values(map).map(([x,y])=>[x,y]); const b=bounds(pts); return {w:b.maxX-b.minX,h:b.maxY-b.minY}; }
+  const sL=sizeFor(LOCAL), sC=sizeFor(CANON);
+  const reqX=Math.min(cellsW/sL.w,cellsW/sC.w), reqY=Math.min(cellsH/sL.h,cellsH/sC.h);
+  LETTER_SCALE=Math.max(0.5,Math.min(SCALE_CAP,Math.min(reqX,reqY)));
+}
+function scaled([x,y]){ return [Math.round(x*LETTER_SCALE),Math.round(y*LETTER_SCALE)]; }
+function centerOffsetWithMargins(map){
+  const all=Object.values(map).map(scaled), b=bounds(all);
+  const w=b.maxX-b.minX, h=b.maxY-b.minY;
+  const availW=(GRID_COLS-1)-2*MARGIN_X, availH=(GRID_ROWS-1)-2*MARGIN_Y;
+  return {x:Math.round(MARGIN_X+(availW-w)/2-b.minX), y:Math.round(MARGIN_Y+(availH-h)/2-b.minY)};
+}
+
+const H={}, SEG=[], ARC=[], GROUPS={W:[],I:[],R:[],E:[],D:[]};
+let lastMovedLetter=null, lastMovedHandle=null, handleAdjacency={};
+let offLocal={x:0,y:0}, offCanon={x:0,y:0};
+let SEG_DRAW=[], ARC_DRAW=[];
+
+/* per-segment trails: persist until that segment moves again */
+const segTrail = {};             // key -> array of {ax,ay,bx,by}
+const segMoving = {};            // key -> boolean (are its endpoints moving this frame?)
+function segKey(a,b){ return a<b ? `${a}|${b}` : `${b}|${a}`; }
+
+function keyOf(gx,gy){ return `${gx},${gy}`; }
+function buildOccupiedSet(excludeId=null){ const S=new Set(); for(const id in H){ if(id===excludeId) continue; const b=H[id].base; S.add(keyOf(b.gx,b.gy)); } return S; }
+function occupied(gx,gy){ for(const id in H){ const b=H[id].base; if(b.gx===gx&&b.gy===gy) return true;} return false; }
+
+function addHandle(letter,id,gx,gy,type,cgx,cgy){
+  const p=gridToPx(gx,gy);
+  H[id]={letter,type,
+    base:{gx,gy}, orig:{gx,gy}, canon:{gx:cgx,gy:cgy},
+    cur:{x:p.x,y:p.y}, prev:{x:p.x,y:p.y}, tgt:{x:p.x,y:p.y},
+    newBase:null,
+    history:[]
+  };
+  GROUPS[letter].push(id);
+  if(!handleAdjacency[id]) handleAdjacency[id]=new Set();
+}
+function lineSeg(a,b){ SEG.push([a,b]); handleAdjacency[a].add(b); handleAdjacency[b].add(a); }
+function arcSeg(a,b,kind){ ARC.push({a,b,kind}); handleAdjacency[a].add(b); handleAdjacency[b].add(a); }
+
+function place(letter,id,type='line'){
+  let [lx,ly]=scaled(LOCAL[id]), [cx,cy]=scaled(CANON[id]);
+  if(letter==='E'){ lx+=E_SHIFT; cx+=E_SHIFT; }
+  if(letter==='D'){ lx+=D_SHIFT; cx+=D_SHIFT; }
+  addHandle(letter,id, lx+offLocal.x, ly+offLocal.y, type, cx+offCanon.x, cy+offCanon.y);
+}
+function rebuild(){
+  for(const k in H) delete H[k];
+  for(const L of Object.keys(GROUPS)) GROUPS[L]=[];
+  SEG.length=0; ARC.length=0; handleAdjacency={};
+
+  place('W','w0'); place('W','w1'); place('W','w2'); place('W','w3'); place('W','w4');
+  lineSeg('w0','w1'); lineSeg('w1','w2'); lineSeg('w2','w3'); lineSeg('w3','w4');
+
+  place('I','iTop'); place('I','iBot');
+  place('I','iTopL'); place('I','iTopR');
+  place('I','iBotL'); place('I','iBotR');
+  lineSeg('iTopL','iTopR'); lineSeg('iTop','iBot'); lineSeg('iBotL','iBotR');
+
+  place('R','rTop'); place('R','rBot'); lineSeg('rTop','rBot');
+  place('R','rMid'); place('R','rLegBot'); lineSeg('rMid','rLegBot');
+  place('R','rBowlTop','R'); place('R','rBowlBot','R'); arcSeg('rBowlTop','rBowlBot','R');
+
+  place('E','eLTop'); place('E','eRTop'); lineSeg('eLTop','eRTop');
+  place('E','eLBot'); place('E','eRBot'); lineSeg('eLBot','eRBot');
+  lineSeg('eLTop','eLBot');
+  place('E','eLMid'); place('E','eRMid'); lineSeg('eLMid','eRMid');
+
+  place('D','dStemTop'); place('D','dStemBot'); lineSeg('dStemTop','dStemBot');
+  place('D','dA','D'); place('D','dB','D'); arcSeg('dA','dB','D');
+
+  E_LEN.top=H.eRTop.base.gx-H.eLTop.base.gx;
+  E_LEN.mid=H.eRMid.base.gx-H.eLMid.base.gx;
+  E_LEN.bot=H.eRBot.base.gx-H.eLBot.base.gx;
+
+  SEG_DRAW = SEG.slice().sort(()=>rand()-0.5);
+  ARC_DRAW = ARC.slice().sort(()=>rand()-0.5);
+
+  // (re)init segment trail state
+  for(const [a,b] of SEG_DRAW){ segMoving[segKey(a,b)]=false; segTrail[segKey(a,b)] = segTrail[segKey(a,b)] || []; }
+  for(const {a,b} of ARC_DRAW){ segMoving[segKey(a,b)]=false; segTrail[segKey(a,b)] = segTrail[segKey(a,b)] || []; }
+}
+
+/* W helpers for constraints */
+function wLeftEdge(){
+  const ids=['w0','w1']; let mn=Infinity;
+  for(const id of ids) if(H[id]) mn=Math.min(mn,H[id].base.gx);
+  return isFinite(mn)?mn:LETTER_SPACING.W.minX;
+}
+function wRightEdge(){
+  const ids=['w0','w1','w2','w3','w4']; let mx=-Infinity;
+  for(const id of ids) if(H[id]) mx=Math.max(mx,H[id].base.gx);
+  return isFinite(mx)?mx:LETTER_SPACING.W.maxX;
+}
+
+/* movement rules */
+function allowedShiftFor(id){
+  const h=H[id], letter=h.letter, base=h.base;
+
+  const dirs=[];
+  for(const s of [1,2]){
+    dirs.push(
+      {dx: 0, dy:-s},{dx: 0, dy: s},{dx:-s, dy: 0},{dx: s, dy: 0},
+      {dx:-s, dy:-s},{dx:-s, dy: s},{dx: s, dy:-s},{dx: s, dy: s}
+    );
+  }
+  dirs.sort(()=>rand()-0.5);
+
+  const band={...LETTER_SPACING[letter]}; if(letter==='E') band.maxX+=E_OVERHANG;
+  const occ=buildOccupiedSet(id);
+  let chosen=null,nx,ny;
+
+  for(const d of dirs){
+    nx=base.gx+d.dx; ny=base.gy+d.dy;
+
+    // R constraints
+    if(id==='rMid'){
+      const sx=H.rTop.base.gx;
+      nx=Math.min(Math.max(nx,sx),sx+1);
+      const minY=H.rTop.base.gy-1,maxY=H.rBot.base.gy;
+      ny=Math.max(minY,Math.min(maxY,ny));
+    }
+    if(id==='rLegBot'){
+      const devX=Math.max(-R_LEG_MAX_DEV,Math.min(R_LEG_MAX_DEV,nx-H[id].orig.gx));
+      const devY=Math.max(-R_LEG_MAX_DEV,Math.min(R_LEG_MAX_DEV,ny-H[id].orig.gy));
+      nx=H[id].orig.gx+devX; ny=H[id].orig.gy+devY;
+    }else{
+      if(Math.abs(nx-H[id].orig.gx)>MAX_DEVIATION) nx=H[id].orig.gx+(nx>H[id].orig.gx?MAX_DEVIATION:-MAX_DEVIATION);
+      if(Math.abs(ny-H[id].orig.gy)>MAX_DEVIATION) ny=H[id].orig.gy+(ny>H[id].orig.gy?MAX_DEVIATION:-MAX_DEVIATION);
+    }
+
+    // W constraints
+    if((id==='w0' || id==='w1') && H.w2){ nx = Math.min(nx, H.w2.base.gx); }
+    if(id==='w2' && (H.w0||H.w1)){ nx = Math.max(nx, Math.min(H.w0.base.gx, H.w1.base.gx)); }
+    if(id==='w4' && H.w2){ nx = Math.max(nx, H.w2.base.gx); }
+
+    // Keep I to the right of W
+    if(id.startsWith('i')){
+      const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + 1);
+      nx = Math.max(minIX, nx);
+    }
+
+    // clamp to <=2 cells from current base
+    nx=Math.max(base.gx-2,Math.min(base.gx+2,nx));
+    ny=Math.max(base.gy-2,Math.min(base.gy+2,ny));
+
+    nx=Math.max(band.minX,Math.min(band.maxX,nx)); nx=Math.max(0,Math.min(GRID_COLS-1,nx));
+    ny=Math.max(0,Math.min(GRID_ROWS-1,ny));
+
+    if(!occ.has(keyOf(nx,ny))){ chosen={nx,ny}; break; }
+  }
+  if(!chosen) return;
+
+  const p=gridToPx(chosen.nx,chosen.ny);
+  h.tgt.x=p.x; h.tgt.y=p.y; h.newBase={gx:chosen.nx,gy:chosen.ny};
+
+  /* I: bars drive the stem (center-locked) */
+  const driveStemFromBar = (left,right,stem)=>{
+    if(id!==left && id!==right) return;
+    const barY = (id===left? H[left].base.gy : H[right].base.gy);
+    let half = Math.round((H[right].base.gx - H[left].base.gx)/2);
+    half = Math.max(2, Math.min(3, half));
+    let cx = (id===left) ? (chosen.nx + half) : (chosen.nx - half);
+    const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + 1);
+    cx = Math.max(minIX + half, Math.min(LETTER_SPACING.I.maxX - half, cx));
+    const gxL = cx - half, gxR = cx + half;
+
+    const lp=gridToPx(gxL,barY), rp=gridToPx(gxR,barY), sp=gridToPx(cx, H[stem].base.gy);
+    H[left].tgt.x=lp.x; H[left].tgt.y=lp.y; H[left].newBase={gx:gxL,gy:barY};
+    H[right].tgt.x=rp.x; H[right].tgt.y=rp.y; H[right].newBase={gx:gxR,gy:barY};
+    H[stem].tgt.x=sp.x; H[stem].tgt.y=sp.y; H[stem].newBase={gx:cx,gy:H[stem].base.gy};
+  };
+  driveStemFromBar('iTopL','iTopR','iTop');
+  driveStemFromBar('iBotL','iBotR','iBot');
+
+  // E spans follow left anchors, and NEVER shorter than MIN_E_SPAN
+  const keepE=(Lid,Rid,minLen)=>{
+    if(id!==Lid) return;
+    const dx=chosen.nx-base.gx;
+    const L=H[Lid], R=H[Rid];
+    let gx=R.base.gx+dx, gy=R.base.gy;
+    const required = Math.max(minLen, MIN_E_SPAN); // enforce minimum span
+    gx=Math.max(gx,L.base.gx+required);
+    gx=Math.min(gx,LETTER_SPACING.E.maxX+E_OVERHANG);
+    gy=Math.max(0,Math.min(GRID_ROWS-1,gy));
+    if(!occupied(gx,gy)){ const pp=gridToPx(gx,gy); R.tgt.x=pp.x; R.tgt.y=pp.y; R.newBase={gx,gy}; }
+  };
+  keepE('eLTop','eRTop',E_LEN.top);
+  keepE('eLMid','eRMid',E_LEN.mid);
+  keepE('eLBot','eRBot',E_LEN.bot);
+}
+
+/* pick + move */
+function pickMovable(){
+  const ids = Object.keys(H);
+  if(!ids.length) return null;
+  if(!STARTED){ return ids[Math.floor(rand()*ids.length)]; }
+  const byLetter = {};
+  for(const id of ids){ const L=H[id].letter; (byLetter[L]??=[]).push(id); }
+  const letters=Object.keys(byLetter);
+  let pool=letters.filter(L=>L!==lastMovedLetter); if(!pool.length) pool=letters;
+  const L=pool[Math.floor(rand()*pool.length)];
+  const neighborBlock=new Set();
+  if(lastMovedHandle&&handleAdjacency[lastMovedHandle]) for(const n of handleAdjacency[lastMovedHandle]) neighborBlock.add(n);
+  if(lastMovedHandle) neighborBlock.add(lastMovedHandle);
+  const cands=byLetter[L].filter(id=>!neighborBlock.has(id));
+  return (cands.length?cands:byLetter[L])[Math.floor(rand()*(cands.length?cands.length:byLetter[L].length))];
+}
+function retargetOnePoint(){ const id=pickMovable(); if(!id) return; allowedShiftFor(id); lastMovedLetter=H[id].letter; lastMovedHandle=id; }
+
+/* ====== TIME API: read current minute from server-side time ====== */
+async function getTimeBucketFromAPI(){
+  try{
+    // Uses client's IP to pick timezone; returns fields including unixtime (seconds since epoch)
+    const res = await fetch('https://worldtimeapi.org/api/ip', { cache: 'no-store' });
+    if(!res.ok) throw new Error('time api error');
+    const data = await res.json();
+    const unixSec = (typeof data.unixtime === 'number') ? data.unixtime : Math.floor(Date.now()/1000);
+    // Convert to ms and bucket by our interval length
+    return Math.floor((unixSec * 1000) / DEV_INTERVAL_MS);
+  }catch(e){
+    // Fallback to local clock if API fails
+    return Math.floor(Date.now() / DEV_INTERVAL_MS);
+  }
+}
+
+/* scheduler */
+let devTimer=null;
+function startScheduler(){
+  if(devTimer) clearInterval(devTimer);
+
+  const tick = async ()=>{
+    const bucket = await getTimeBucketFromAPI(); // <-- source minute from time API
+    reseed(bucket);
+    retargetOnePoint();
+  };
+
+  // fire once now, then every minute
+  tick();
+  devTimer = setInterval(tick, DEV_INTERVAL_MS);
+}
+
+/* API seed then start */
+async function connectRandomAPI(){
+  try{
+    const res = await fetch('https://random-data-api.com/api/v2/users?size=1', {cache:'no-store'});
+    if(!res.ok) throw new Error('Random API error');
+    const data = await res.json();
+    const seedStr = (data && (data.id || data.uid || data.first_name || JSON.stringify(data))) + '';
+    let seed = 0; for(let i=0;i<seedStr.length;i++){ seed = (seed*131 + seedStr.charCodeAt(i))>>>0; }
+    reseed(seed);
+  }catch(e){
+    reseed((Date.now() ^ salt32())>>>0);
+  }finally{
+    STARTED = true;
+    MOVEMENT_ENABLED = true;
+    retargetOnePoint();
+    startScheduler();
+  }
+}
+
+/* fan-curve helpers */
+function controlForR(ax,ay,bx,by){
+  const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
+  const k=Math.min(3.5,dist*0.18);
+  const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
+  return {x:Math.max(padX,Math.min(width-padX,mx+k*cw())),y:Math.max(padY,Math.min(height-padY,my))};
+}
+function controlForD(ax,ay,bx,by){
+  const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
+  const side=28+dist*0.8;
+  const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
+  return {x:Math.max(padX,Math.min(width-padX,mx+side*cw())),y:Math.max(padY,Math.min(height-padY,my))};
+}
+
+/* draw helpers */
+function drawFanTrailForSegment(aH,bH,key,kind){
+  const samples = segTrail[key];
+  if(!samples || samples.length<2) return;
+  // fade newest -> brightest
+  for(let i=0;i<samples.length-1;i++){
+    const t=i/(samples.length-1);
+    const alpha = 40 + (1-Math.sqrt(1-t))*160;
+    stroke(255,alpha);
+    strokeWeight(FAN_W);
+    noFill();
+    const s = samples[i];
+    if(!kind){
+      line(s.ax,s.ay,s.bx,s.by);
+    }else{
+      const c = (kind==='R') ? controlForR(s.ax,s.ay,s.bx,s.by)
+                             : controlForD(s.ax,s.ay,s.bx,s.by);
+      beginShape(); vertex(s.ax,s.ay); quadraticVertex(c.x,c.y,s.bx,s.by); endShape();
+    }
+  }
+}
+
+function setup(){
+  createCanvas(windowWidth, windowHeight);
+  computeBestScale(); offLocal=centerOffsetWithMargins(LOCAL); offCanon=centerOffsetWithMargins(CANON);
+  rebuild();
+  connectRandomAPI();
+}
+function windowResized(){
+  resizeCanvas(windowWidth,windowHeight);
+  computeBestScale(); offLocal=centerOffsetWithMargins(LOCAL); offCanon=centerOffsetWithMargins(CANON);
+  rebuild();
+}
+
+/* NEW: continuously align the I stem to the bars’ midpoints */
+function enforceIAlignment(){
+  if(!(H.iTop && H.iBot && H.iTopL && H.iTopR && H.iBotL && H.iBotR)) return;
+
+  // compute midpoints (in pixels) of top and bottom bars
+  const topMidX = (H.iTopL.cur.x + H.iTopR.cur.x)/2;
+  const botMidX = (H.iBotL.cur.x + H.iBotR.cur.x)/2;
+  const desiredCX = (topMidX + botMidX)/2;
+
+  // keep the stem (both top & bottom points) centered to bars (stem follows bars)
+  H.iTop.tgt.x = desiredCX;
+  H.iBot.tgt.x = desiredCX;
+
+  // keep bar rows perfectly horizontal (already done elsewhere, but safe)
+  H.iTopL.cur.y = H.iTop.cur.y;
+  H.iTopR.cur.y = H.iTop.cur.y;
+  H.iBotL.cur.y = H.iBot.cur.y;
+  H.iBotR.cur.y = H.iBot.cur.y;
+
+  // nudge base gx to stay consistent with grid when close to target
+  const gxTop = pxToGridX(H.iTop.tgt.x, H.iTop.base.gy);
+  const gxBot = pxToGridX(H.iBot.tgt.x, H.iBot.base.gy);
+  if (Math.abs(H.iTop.tgt.x - H.iTop.cur.x) < 0.6)  H.iTop.newBase = {gx:gxTop, gy:H.iTop.base.gy};
+  if (Math.abs(H.iBot.tgt.x - H.iBot.cur.x) < 0.6)  H.iBot.newBase = {gx:gxBot, gy:H.iBot.base.gy};
+}
+
+function draw(){
+  background(0);
+
+  // grid dots
+  noStroke(); fill(255,GRID_DOT_ALPHA);
+  for(let gy=0; gy<GRID_ROWS; gy++)
+    for(let gx=0; gx<GRID_COLS; gx++){
+      const p=gridToPx(gx,gy); circle(p.x,p.y,GRID_DOT_SIZE);
+    }
+
+  // ease positions, detect which handles moved this frame
+  const movedHandles = new Set();
+  for(const id in H){
+    const h=H[id];
+    const px=h.cur.x, py=h.cur.y;
+    h.cur.x += (h.tgt.x-h.cur.x)*EASING;
+    h.cur.y += (h.tgt.y-h.cur.y)*EASING;
+    if(Math.hypot(h.cur.x-px,h.cur.y-py) > 0.05) movedHandles.add(id);
+
+    if(h.newBase && Math.abs(h.tgt.x-h.cur.x)<0.5 && Math.abs(h.tgt.y-h.cur.y)<0.5){
+      h.base.gx=h.newBase.gx; h.base.gy=h.newBase.gy; h.newBase=null;
+    }
+  }
+
+  // keep bar rows perfectly horizontal
+  if(H.iTop&&H.iTopL&&H.iTopR){ H.iTopL.cur.y=H.iTop.cur.y; H.iTopR.cur.y=H.iTop.cur.y; }
+  if(H.iBot&&H.iBotL&&H.iBotR){ H.iBotL.cur.y=H.iBot.cur.y; H.iBotR.cur.y=H.iBot.cur.y; }
+  if(H.eLTop&&H.eRTop) H.eRTop.cur.y=H.eLTop.cur.y;
+  if(H.eLMid&&H.eRMid) H.eRMid.cur.y=H.eLMid.cur.y;
+  if(H.eLBot&&H.eRBot) H.eRBot.cur.y=H.eLBot.cur.y;
+
+  // NEW: ensure I stem stays aligned to the bars every frame
+  enforceIAlignment();
+
+  // UPDATE SEGMENT TRAILS:
+  const touchSeg = (a,b,kind)=>{
+    const key = segKey(a,b);
+    const A=H[a], B=H[b];
+    const anyMoved = movedHandles.has(a) || movedHandles.has(b);
+    if(anyMoved){
+      if(!segMoving[key]) segTrail[key]=[]; // starting a new motion -> reset the trail
+      segMoving[key]=true;
+      const s = {ax:A.cur.x, ay:A.cur.y, bx:B.cur.x, by:B.cur.y};
+      segTrail[key].push(s);
+      if(segTrail[key].length>TRAIL_SAMPLE_CAP) segTrail[key].shift();
+    }else{
+      segMoving[key]=false; // not moving this frame; keep last trail
+    }
+  };
+
+  for(const [a,b] of SEG_DRAW) touchSeg(a,b,null);
+  for(const {a,b,kind} of ARC_DRAW) touchSeg(a,b,kind);
+
+  // DRAW trails (persisted)
+  for(const [a,b] of SEG_DRAW) drawFanTrailForSegment(H[a],H[b],segKey(a,b),null);
+  for(const {a,b,kind} of ARC_DRAW) drawFanTrailForSegment(H[a],H[b],segKey(a,b),kind);
+
+  // live skeleton
+  stroke(255); strokeWeight(STROKE_W); noFill();
+  for(const [a,b] of SEG_DRAW){ const A=H[a],B=H[b]; line(A.cur.x,A.cur.y,B.cur.x,B.cur.y); }
+  for(const {a,b,kind} of ARC_DRAW){
+    const A=H[a],B=H[b];
+    const c=(kind==='R')?controlForR(A.cur.x,A.cur.y,B.cur.x,B.cur.y)
+                        :controlForD(A.cur.x,A.cur.y,B.cur.x,B.cur.y);
+    beginShape(); vertex(A.cur.x,A.cur.y); quadraticVertex(c.x,c.y,B.cur.x,B.cur.y); endShape();
+  }
+
+  // anchors
+  noStroke(); fill(255,ANCHOR_ALPHA);
+  for(const id in H){ const h=H[id]; circle(h.cur.x,h.cur.y,ANCHOR_SIZE); }
+}
+</script>
+</body>
+</html>
