@@ -32,8 +32,8 @@ const MAX_DEVIATION=2, R_LEG_STEP=1, R_LEG_MAX_DEV=3;
 
 /* ========== DRAW STYLE ========== */
 const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0; // ← background dots at 0%
-const ANCHOR_SIZE=8, ANCHOR_ALPHA=255;
-const STROKE_W=3;
+const ANCHOR_SIZE=7, ANCHOR_ALPHA=255;   // end dots: 7
+const STROKE_W=5;                        // main stroke: 5
 const FAN_W=1.2;
 const EASING=0.12;
 
@@ -323,7 +323,7 @@ function startScheduler(){
 /* one-time random API seed to vary first layout per load */
 async function connectRandomAPI(){
   try{
-    const res = await fetch('https://random-data-api.com/api/v2/users?size=1', {cache:'no-store'});
+    const res = await fetch('https://random-data_api.com/api/v2/users?size=1', {cache:'no-store'});
     if(!res.ok) throw new Error('Random API error');
     const data = await res.json();
     const seedStr = (data && (data.id || data.uid || data.first_name || JSON.stringify(data))) + '';

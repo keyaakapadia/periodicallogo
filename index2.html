@@ -31,9 +31,9 @@ let STARTED = false;
 const MAX_DEVIATION=2, R_LEG_STEP=1, R_LEG_MAX_DEV=3;
 
 /* ========== DRAW STYLE ========== */
-const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0; // ← background dots at 0%
-const ANCHOR_SIZE=8, ANCHOR_ALPHA=255;
-const STROKE_W=3;
+const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0; // background dots at 0%
+const ANCHOR_SIZE=7, ANCHOR_ALPHA=255;   // end dots: 7
+const STROKE_W=5;                        // main stroke: 5
 const FAN_W=1.2;
 const EASING=0.12;
 
@@ -322,7 +322,7 @@ function startScheduler(){
   if(devTimer) clearInterval(devTimer);
 
   const tick = async ()=>{
-    const bucket = await getTimeBucketFromAPI(); // <-- source minute from time API
+    const bucket = await getTimeBucketFromAPI(); // source minute from time API
     reseed(bucket);
     retargetOnePoint();
   };
@@ -399,7 +399,7 @@ function windowResized(){
   rebuild();
 }
 
-/* NEW: continuously align the I stem to the bars’ midpoints */
+/* continuously align the I stem to the bars’ midpoints */
 function enforceIAlignment(){
   if(!(H.iTop && H.iBot && H.iTopL && H.iTopR && H.iBotL && H.iBotR)) return;
 
@@ -412,7 +412,7 @@ function enforceIAlignment(){
   H.iTop.tgt.x = desiredCX;
   H.iBot.tgt.x = desiredCX;
 
-  // keep bar rows perfectly horizontal (already done elsewhere, but safe)
+  // keep bar rows perfectly horizontal
   H.iTopL.cur.y = H.iTop.cur.y;
   H.iTopR.cur.y = H.iTop.cur.y;
   H.iBotL.cur.y = H.iBot.cur.y;
@@ -444,7 +444,7 @@ function draw(){
     h.cur.y += (h.tgt.y-h.cur.y)*EASING;
     if(Math.hypot(h.cur.x-px,h.cur.y-py) > 0.05) movedHandles.add(id);
 
-    if(h.newBase && Math.abs(h.tgt.x-h.cur.x)<0.5 && Math.abs(h.tgt.y-h.cur.y)<0.5){
+    if(h.newBase && Math.abs(h.tgt.x-h.cur.x)<0.5 && Math.abs(h.tgt.y-h.cur.y)< 0.5){
       h.base.gx=h.newBase.gx; h.base.gy=h.newBase.gy; h.newBase=null;
     }
   }
@@ -456,7 +456,7 @@ function draw(){
   if(H.eLMid&&H.eRMid) H.eRMid.cur.y=H.eLMid.cur.y;
   if(H.eLBot&&H.eRBot) H.eRBot.cur.y=H.eLBot.cur.y;
 
-  // NEW: ensure I stem stays aligned to the bars every frame
+  // ensure I stem stays aligned to the bars every frame
   enforceIAlignment();
 
   // UPDATE SEGMENT TRAILS:
@@ -492,7 +492,7 @@ function draw(){
     beginShape(); vertex(A.cur.x,A.cur.y); quadraticVertex(c.x,c.y,B.cur.x,B.cur.y); endShape();
   }
 
-  // anchors
+  // anchors (end dots)
   noStroke(); fill(255,ANCHOR_ALPHA);
   for(const id in H){ const h=H[id]; circle(h.cur.x,h.cur.y,ANCHOR_SIZE); }
 }
