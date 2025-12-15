@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>WIRED — Periodical Logo (every 5 seconds)</title>
+<title>WIRED — Periodical Logo (every 10 seconds)</title>
 <style>
   html,body{
     margin:0;
@@ -68,7 +68,7 @@ let LETTER_SCALE = 1.0;
 const SCALE_CAP  = 1.0;
 
 /* ========== MOTION ========== */
-const DEV_INTERVAL_MS = 10000;
+const DEV_INTERVAL_MS = 10000; // sync bucket
 let MOVEMENT_ENABLED = false;
 let STARTED = false;
 
@@ -77,10 +77,12 @@ const MAX_DEV_X = 1;   // max 1 cell sideways
 const MAX_DEV_Y = 2;   // up to 2 cells vertically
 
 /* ========== DRAW STYLE ========== */
-const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0;
-const ANCHOR_SIZE=8, ANCHOR_ALPHA=255;
-const STROKE_W=7;            // thicker strokes
-const FAN_W_FACTOR = 0.45;   // trail thinner than stroke
+const GRID_DOT_SIZE=2;
+const GRID_DOT_ALPHA=40;   // faint background dots
+const ANCHOR_SIZE=5;       // smaller anchors
+const ANCHOR_ALPHA=255;
+const STROKE_W=7;          // thicker strokes
+const FAN_W_FACTOR = 0.45; // trail thinner than stroke
 const EASING=0.12;
 
 /* trails */
@@ -153,8 +155,8 @@ const LOCAL={
   iTop:[12.5,0],iBot:[12.5,10], iTopL:[11,0],iTopR:[14,0], iBotL:[11,10],iBotR:[14,10],
   rTop:[17,0],rBot:[17,10],rMid:[17,5], rBowlTop:[18,1],rBowlBot:[19,4], rLegBot:[23,10],
   eLTop:[27,0],eRTop:[33,0], eLBot:[27,10],eRBot:[33,10], eLMid:[27,5],eRMid:[32,5],
-  // D bowl mirrored to LEFT of the stem
-  dStemTop:[36,0],dStemBot:[36,10], dA:[35,1],dB:[35,9]
+  // D bowl on the RIGHT of the stem
+  dStemTop:[36,0],dStemBot:[36,10], dA:[37,1],dB:[37,9]
 };
 /* canonical version (straighter / more regular) */
 const CANON={
@@ -162,7 +164,7 @@ const CANON={
   iTop:[12.5,0],iBot:[12.5,10], iTopL:[11.5,0],iTopR:[13.5,0], iBotL:[11.5,10],iBotR:[13.5,10],
   rTop:[17,0],rBot:[17,10],rMid:[17,5], rBowlTop:[17,0],rBowlBot:[19,3], rLegBot:[22,10],
   eLTop:[27,0],eRTop:[31,0], eLBot:[27,10],eRBot:[31,10], eLMid:[27,5],eRMid:[30,5],
-  dStemTop:[36,0],dStemBot:[36,10], dA:[35,1],dB:[35,9] // mirrored left
+  dStemTop:[36,0],dStemBot:[36,10], dA:[37,1],dB:[37,9] // bowl right
 };
 
 function computeBestScale(){
@@ -485,7 +487,7 @@ async function connectRandomAPI(){
     }
     reseed(seed);
   }catch(e){
-    reseed((Date.now() ^ salt32())>>>0);
+  reseed((Date.now() ^ salt32())>>>0);
   }finally{
     STARTED = true;
     MOVEMENT_ENABLED = true;
@@ -509,8 +511,8 @@ function controlForD(ax,ay,bx,by){
   const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
   const side=8+dist*0.4;
   const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
-  // move control to LEFT of stem
-  let x = mx - side*cw();
+  // move control to RIGHT of stem/bowl
+  let x = mx + side*cw();
   let y = my;
   const dBand = LETTER_SPACING.D;
   const minPx = (dBand.minX)*cw()+padX;
@@ -584,7 +586,7 @@ function enforceIAlignment(){
 function draw(){
   background(invert ? 0 : 255);
 
-  // grid dots (invisible)
+  // grid dots (visible, small)
   noStroke();
   fill(invert ? 255 : 0, GRID_DOT_ALPHA);
   for(let gy=0; gy<GRID_ROWS; gy++){
@@ -671,7 +673,7 @@ function draw(){
     endShape();
   }
 
-  // anchors
+  // anchors (small dots)
   noStroke();
   fill(invert ? 255 : 0, ANCHOR_ALPHA);
   for(const id in H){
