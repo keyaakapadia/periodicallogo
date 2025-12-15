@@ -13,32 +13,31 @@
   }
   canvas{display:block}
 
-  /* theme toggle button */
+  /* circular toggle button (no text) */
   #modeToggle{
     position:fixed;
     top:12px;
     right:12px;
-    padding:6px 12px;
-    font-size:12px;
+    width:24px;
+    height:24px;
     border-radius:999px;
-    border:1px solid rgba(255,255,255,0.6);
-    background:rgba(0,0,0,0.65);
-    color:#fff;
+    border:1px solid rgba(0,0,0,0.6);
+    background:#ffffff;
     cursor:pointer;
     z-index:10;
-    backdrop-filter:blur(6px);
+    box-shadow:0 0 0 1px rgba(0,0,0,0.05);
   }
-  #modeToggle.light{
-    border-color:rgba(0,0,0,0.5);
-    background:rgba(255,255,255,0.75);
-    color:#000;
+  #modeToggle.dark{
+    border-color:rgba(255,255,255,0.7);
+    background:#000000;
+    box-shadow:0 0 0 1px rgba(255,255,255,0.15);
   }
 </style>
 <link rel="icon" type="image/png" href="favicon.png">
 </head>
 <body>
 
-<button id="modeToggle" class="light">White on Black</button>
+<button id="modeToggle" aria-label="Toggle color mode"></button>
 
 <script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
 <script>
@@ -53,14 +52,24 @@ const DEV_INTERVAL_MS = 10000;
 let MOVEMENT_ENABLED = false;
 let STARTED = false;
 
-/* bounds */
-const MAX_DEVIATION=2, R_LEG_STEP=1, R_LEG_MAX_DEV=3;
+/* bounds (anisotropic: more vertical than horizontal) */
+const MAX_DEV_X = 1;   // max 1 cell sideways
+const MAX_DEV_Y = 2;   // up to 2 cells vertically
 
 /* ========== DRAW STYLE ========== */
-const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0; // background dots invisible
-const ANCHOR_SIZE=7, ANCHOR_ALPHA=255;
-const STROKE_W=5;
+const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0;
+const ANCHOR_SIZE=8, ANCHOR_ALPHA=255;
+const STROKE_W=7;           // thicker stroke
+const FAN_W_FACTOR = 0.45;  // trails slightly thinner than stroke
 const EASING=0.12;
+
+/* trails */
+const TRAIL_SAMPLE_CAP = 40; // shorter trails
+
+/* caches */
+let E_LEN={top:0,mid:0,bot:0};
+const E_OVERHANG=2;
+const MIN_E_SPAN = 3;
 
 /* THEME (false = black on white, true = white on black) */
 let invert = false;
@@ -68,18 +77,11 @@ const modeBtn = document.getElementById('modeToggle');
 modeBtn.addEventListener('click', () => {
   invert = !invert;
   if(invert){
-    modeBtn.textContent = 'Black on White';
-    modeBtn.classList.remove('light');
+    modeBtn.classList.add('dark');
   }else{
-    modeBtn.textContent = 'White on Black';
-    modeBtn.classList.add('light');
+    modeBtn.classList.remove('dark');
   }
 });
-
-/* caches */
-let E_LEN={top:0,mid:0,bot:0};
-const E_OVERHANG=2;
-const MIN_E_SPAN = 3;
 
 /* RNG */
 function salt32(){
@@ -170,6 +172,11 @@ let lastMovedLetter=null, lastMovedHandle=null, handleAdjacency={};
 let offLocal={x:0,y:0}, offCanon={x:0,y:0};
 let SEG_DRAW=[], ARC_DRAW=[];
 
+/* per-segment trails */
+const segTrail = {};  // key -> array of {ax,ay,bx,by}
+const segMoving = {}; // key -> bool
+function segKey(a,b){ return a<b ? `${a}|${b}` : `${b}|${a}`; }
+
 function keyOf(gx,gy){ return `${gx},${gy}`; }
 function buildOccupiedSet(excludeId=null){
   const S=new Set();
@@ -240,6 +247,18 @@ function rebuild(){
 
   SEG_DRAW = SEG.slice().sort(()=>rand()-0.5);
   ARC_DRAW = ARC.slice().sort(()=>rand()-0.5);
+
+  // initialise trail state
+  for(const [a,b] of SEG_DRAW){
+    const key = segKey(a,b);
+    segMoving[key]=false;
+    if(!segTrail[key]) segTrail[key]=[];
+  }
+  for(const {a,b} of ARC_DRAW){
+    const key = segKey(a,b);
+    segMoving[key]=false;
+    if(!segTrail[key]) segTrail[key]=[];
+  }
 }
 
 /* W helpers for constraints */
@@ -262,10 +281,18 @@ function allowedShiftFor(id){
 
   const dirs=[];
   for(const s of [1,2]){
+    // axial moves
     dirs.push(
-      {dx:0,dy:-s},{dx:0,dy:s},{dx:-s,dy:0},{dx:s,dy:0},
-      {dx:-s,dy:-s},{dx:-s,dy:s},{dx:s,dy:-s},{dx:s,dy:s}
+      {dx:0,dy:-s},{dx:0,dy:s},
+      {dx:-s,dy:0},{dx:s,dy:0}
     );
+    // diagonals only for step 1 (so max 1 cell diagonally)
+    if(s===1){
+      dirs.push(
+        {dx:-1,dy:-1},{dx:-1,dy:1},
+        {dx:1,dy:-1},{dx:1,dy:1}
+      );
+    }
   }
   dirs.sort(()=>rand()-0.5);
 
@@ -284,16 +311,18 @@ function allowedShiftFor(id){
       const minY=H.rTop.base.gy-1,maxY=H.rBot.base.gy;
       ny=Math.max(minY,Math.min(maxY,ny));
     }
+
+    // anisotropic deviation from original position
     if(id==='rLegBot'){
-      const devX=Math.max(-R_LEG_MAX_DEV,Math.min(R_LEG_MAX_DEV,nx-H[id].orig.gx));
-      const devY=Math.max(-R_LEG_MAX_DEV,Math.min(R_LEG_MAX_DEV,ny-H[id].orig.gy));
+      const devX=Math.max(-MAX_DEV_X,Math.min(MAX_DEV_X,nx-H[id].orig.gx));
+      const devY=Math.max(-MAX_DEV_Y,Math.min(MAX_DEV_Y,ny-H[id].orig.gy));
       nx=H[id].orig.gx+devX;
       ny=H[id].orig.gy+devY;
     }else{
-      if(Math.abs(nx-H[id].orig.gx)>MAX_DEVIATION)
-        nx=H[id].orig.gx+(nx>H[id].orig.gx?MAX_DEVIATION:-MAX_DEVIATION);
-      if(Math.abs(ny-H[id].orig.gy)>MAX_DEVIATION)
-        ny=H[id].orig.gy+(ny>H[id].orig.gy?MAX_DEVIATION:-MAX_DEVIATION);
+      if(Math.abs(nx-H[id].orig.gx)>MAX_DEV_X)
+        nx=H[id].orig.gx+(nx>H[id].orig.gx?MAX_DEV_X:-MAX_DEV_X);
+      if(Math.abs(ny-H[id].orig.gy)>MAX_DEV_Y)
+        ny=H[id].orig.gy+(ny>H[id].orig.gy?MAX_DEV_Y:-MAX_DEV_Y);
     }
 
     // W constraints
@@ -452,19 +481,19 @@ async function connectRandomAPI(){
   }
 }
 
-/* fan-curve helpers (now only for live stroke, no trails) */
+/* fan-curve helpers */
 function controlForR(ax,ay,bx,by){
   const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
   const k=Math.min(3.5,dist*0.18);
   const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
-  const x = Math.max(padX,Math.min(width-padX,mx+k*cw()));
-  const y = Math.max(padY,Math.min(height-padY,my));
+  let x = mx+k*cw();
+  let y = my;
+  x = Math.max(padX,Math.min(width-padX,x));
+  y = Math.max(padY,Math.min(height-padY,y));
   return {x,y};
 }
 function controlForD(ax,ay,bx,by){
   const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
-  // Keep control point inside D’s horizontal band so its bounding box
-  // never crosses into neighboring letters.
   const side=8+dist*0.4;
   const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
   let x = mx+side*cw();
@@ -477,7 +506,31 @@ function controlForD(ax,ay,bx,by){
   return {x,y};
 }
 
-/* draw helpers */
+/* draw fan trails */
+function drawFanTrailForSegment(aH,bH,key,kind){
+  const samples = segTrail[key];
+  if(!samples || samples.length<2) return;
+  for(let i=0;i<samples.length-1;i++){
+    const t=i/(samples.length-1);
+    const alpha = 35 + (1 - t)*(90); // fade out
+    stroke(invert ? 255 : 0, alpha);
+    strokeWeight(STROKE_W * FAN_W_FACTOR);
+    noFill();
+    const s = samples[i];
+    if(!kind){
+      line(s.ax,s.ay,s.bx,s.by);
+    }else{
+      const c = (kind==='R') ? controlForR(s.ax,s.ay,s.bx,s.by)
+                             : controlForD(s.ax,s.ay,s.bx,s.by);
+      beginShape();
+      vertex(s.ax,s.ay);
+      quadraticVertex(c.x,c.y,s.bx,s.by);
+      endShape();
+    }
+  }
+}
+
+/* p5 lifecycle */
 function setup(){
   createCanvas(windowWidth, windowHeight);
   computeBestScale();
@@ -487,6 +540,7 @@ function setup(){
   connectRandomAPI();
 }
 function windowResized(){
+  resizeCanvas(windowHeight, windowHeight);
   resizeCanvas(windowWidth,windowHeight);
   computeBestScale();
   offLocal=centerOffsetWithMargins(LOCAL);
@@ -517,7 +571,7 @@ function enforceIAlignment(){
 function draw(){
   background(invert ? 0 : 255);
 
-  // optional (invisible) grid
+  // grid dots (invisible)
   noStroke();
   fill(invert ? 255 : 0, GRID_DOT_ALPHA);
   for(let gy=0; gy<GRID_ROWS; gy++){
@@ -527,11 +581,14 @@ function draw(){
     }
   }
 
-  // ease positions
+  // ease positions + detect motion
+  const movedHandles = new Set();
   for(const id in H){
     const h=H[id];
+    const px=h.cur.x, py=h.cur.y;
     h.cur.x += (h.tgt.x-h.cur.x)*EASING;
     h.cur.y += (h.tgt.y-h.cur.y)*EASING;
+    if(Math.hypot(h.cur.x-px,h.cur.y-py) > 0.05) movedHandles.add(id);
 
     if(h.newBase &&
        Math.abs(h.tgt.x-h.cur.x)<0.5 &&
@@ -557,7 +614,32 @@ function draw(){
 
   enforceIAlignment();
 
-  // live skeleton (no trails, just clean strokes)
+  // trail bookkeeping
+  const touchSeg = (a,b,kind)=>{
+    const key = segKey(a,b);
+    const A=H[a], B=H[b];
+    const anyMoved = movedHandles.has(a) || movedHandles.has(b);
+    if(anyMoved){
+      if(!segMoving[key]) segTrail[key]=[];
+      segMoving[key]=true;
+      const s = {ax:A.cur.x, ay:A.cur.y, bx:B.cur.x, by:B.cur.y};
+      segTrail[key].push(s);
+      if(segTrail[key].length>TRAIL_SAMPLE_CAP) segTrail[key].shift();
+    }else{
+      segMoving[key]=false;
+    }
+  };
+
+  for(const [a,b] of SEG_DRAW) touchSeg(a,b,null);
+  for(const {a,b,kind} of ARC_DRAW) touchSeg(a,b,kind);
+
+  // draw trails behind
+  for(const [a,b] of SEG_DRAW)
+    drawFanTrailForSegment(H[a],H[b],segKey(a,b),null);
+  for(const {a,b,kind} of ARC_DRAW)
+    drawFanTrailForSegment(H[a],H[b],segKey(a,b),kind);
+
+  // live skeleton
   stroke(invert ? 255 : 0);
   strokeWeight(STROKE_W);
   noFill();
