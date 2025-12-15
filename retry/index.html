@@ -5,40 +5,76 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>WIRED — Periodical Logo (every 5 seconds)</title>
 <style>
-  html,body{
-    margin:0;
-    height:100%;
-    overflow:hidden;
-    font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  :root{
+    --bg:#fff;
+    --fg:#000;
   }
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden}
   canvas{display:block}
 
-  /* theme toggle button */
-  #modeToggle{
+  /* top-right switch (no text) */
+  .ui-toggle{
     position:fixed;
-    top:12px;
-    right:12px;
-    padding:6px 12px;
-    font-size:12px;
-    border-radius:999px;
-    border:1px solid rgba(255,255,255,0.6);
-    background:rgba(0,0,0,0.65);
-    color:#fff;
-    cursor:pointer;
+    top:14px;
+    right:14px;
     z-index:10;
-    backdrop-filter:blur(6px);
+    user-select:none;
+    -webkit-tap-highlight-color:transparent;
   }
-  #modeToggle.light{
-    border-color:rgba(0,0,0,0.5);
-    background:rgba(255,255,255,0.75);
-    color:#000;
+  .switch{
+    width:52px;height:30px;
+    border-radius:999px;
+    background:rgba(0,0,0,.10);
+    border:2px solid rgba(0,0,0,.18);
+    display:inline-flex;
+    align-items:center;
+    padding:3px;
+    box-sizing:border-box;
+    cursor:pointer;
+    transition:background .2s ease, border-color .2s ease, box-shadow .2s ease;
+  }
+  .knob{
+    width:22px;height:22px;
+    border-radius:999px;
+    background:var(--fg);
+    transform:translateX(0);
+    transition:transform .22s ease, background .2s ease;
+    position:relative;
+    box-shadow:0 3px 10px rgba(0,0,0,.18);
+  }
+  /* tiny "trail" glow on the knob (works in both modes) */
+  .knob::after{
+    content:"";
+    position:absolute; inset:-8px;
+    border-radius:999px;
+    background:radial-gradient(circle, rgba(0,0,0,.14), rgba(0,0,0,0) 60%);
+    opacity:.6;
+    filter:blur(2px);
+    transition:opacity .2s ease;
+  }
+
+  input#themeSwitch{position:absolute;opacity:0;pointer-events:none}
+
+  body.invert .switch{
+    background:rgba(255,255,255,.10);
+    border-color:rgba(255,255,255,.22);
+    box-shadow:0 0 0 6px rgba(255,255,255,.06);
+  }
+  body.invert .knob{ transform:translateX(22px); }
+  body.invert .knob::after{
+    background:radial-gradient(circle, rgba(255,255,255,.18), rgba(255,255,255,0) 60%);
   }
 </style>
 <link rel="icon" type="image/png" href="favicon.png">
 </head>
 <body>
 
-<button id="modeToggle" class="light">White on Black</button>
+<div class="ui-toggle" aria-hidden="false">
+  <label class="switch" for="themeSwitch" aria-label="Toggle theme">
+    <span class="knob"></span>
+  </label>
+  <input id="themeSwitch" type="checkbox" />
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
 <script>
@@ -54,27 +90,18 @@ let MOVEMENT_ENABLED = false;
 let STARTED = false;
 
 /* bounds */
-const MAX_DEVIATION=2, R_LEG_STEP=1, R_LEG_MAX_DEV=3;
+const MAX_DEVIATION_X = 2;          // keep X tight
+const R_LEG_STEP=1, R_LEG_MAX_DEV=3;
 
 /* ========== DRAW STYLE ========== */
-const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0; // background dots invisible
+const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0;
 const ANCHOR_SIZE=7, ANCHOR_ALPHA=255;
 const STROKE_W=5;
+const FAN_W=1.2;
 const EASING=0.12;
 
-/* THEME (false = black on white, true = white on black) */
-let invert = false;
-const modeBtn = document.getElementById('modeToggle');
-modeBtn.addEventListener('click', () => {
-  invert = !invert;
-  if(invert){
-    modeBtn.textContent = 'Black on White';
-    modeBtn.classList.remove('light');
-  }else{
-    modeBtn.textContent = 'White on Black';
-    modeBtn.classList.add('light');
-  }
-});
+/* trails */
+const TRAIL_SAMPLE_CAP = 120;
 
 /* caches */
 let E_LEN={top:0,mid:0,bot:0};
@@ -82,41 +109,18 @@ const E_OVERHANG=2;
 const MIN_E_SPAN = 3;
 
 /* RNG */
-function salt32(){
-  if(crypto?.getRandomValues){
-    const a=new Uint32Array(1);
-    crypto.getRandomValues(a);
-    return a[0]>>>0;
-  }
-  return (Math.random()*0xFFFFFFFF)>>>0;
-}
+function salt32(){ if(crypto?.getRandomValues){const a=new Uint32Array(1);crypto.getRandomValues(a);return a[0]>>>0;} return (Math.random()*0xFFFFFFFF)>>>0; }
 const SESSION_SALT=salt32();
-function mulberry32(a){
-  return function(){
-    let t=a+=0x6D2B79F5;
-    t=Math.imul(t^t>>>15,t|1);
-    t^=t+Math.imul(t^t>>>7,t|61);
-    return((t^t>>>14)>>>0)/4294967296;
-  }
-}
+function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
 let rand=mulberry32(1);
 function reseed(n){ rand=mulberry32(((n>>>0)^SESSION_SALT)>>>0||1); }
 
 /* helpers */
 function cw(){ return width /(GRID_COLS-1||1); }
 function ch(){ return height/(GRID_ROWS-1||1); }
-function gridToPx(gx,gy){
-  const o=(gy%2===1)?cw()/2:0;
-  return {x:gx*cw()+o,y:gy*ch()};
-}
-function pxToGridX(x,gy){
-  const o=(gy%2===1)?cw()/2:0;
-  return Math.round((x - o)/cw());
-}
-function bounds(pts){
-  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
-  return {minX:Math.min(...xs),maxX:Math.max(...xs),minY:Math.min(...ys),maxY:Math.max(...ys)};
-}
+function gridToPx(gx,gy){ const o=(gy%2===1)?cw()/2:0; return {x:gx*cw()+o,y:gy*ch()}; }
+function pxToGridX(x,gy){ const o=(gy%2===1)?cw()/2:0; return Math.round((x - o)/cw()); }
+function bounds(pts){ const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]); return {minX:Math.min(...xs),maxX:Math.max(...xs),minY:Math.min(...ys),maxY:Math.max(...ys)}; }
 
 const LETTER_SPACING={
   W:{minX:0,maxX:9},
@@ -127,6 +131,11 @@ const LETTER_SPACING={
 };
 const E_SHIFT=-2; LETTER_SPACING.E.minX+=E_SHIFT; LETTER_SPACING.E.maxX+=E_SHIFT;
 const D_SHIFT=-2; LETTER_SPACING.D.minX+=D_SHIFT; LETTER_SPACING.D.maxX+=D_SHIFT;
+
+/* FIX 1: hard non-overlap between E and D bounding bands (prevents clashes) */
+const LETTER_GAP = 1; // at least 1 empty column between letter bands
+const SAFE_D_MIN = Math.max(LETTER_SPACING.D.minX, (LETTER_SPACING.E.maxX + E_OVERHANG) + LETTER_GAP + 1);
+// We'll use SAFE_D_MIN for movement clamping only (does not change initial placement).
 
 const LOCAL={
   w0:[0,0],w1:[2,10],w2:[4.5,5],w3:[7,10],w4:[9,0],
@@ -145,11 +154,7 @@ const CANON={
 
 function computeBestScale(){
   const cellsW=(GRID_COLS-1)-2*MARGIN_X, cellsH=(GRID_ROWS-1)-2*MARGIN_Y;
-  function sizeFor(map){
-    const pts=Object.values(map).map(([x,y])=>[x,y]);
-    const b=bounds(pts);
-    return {w:b.maxX-b.minX,h:b.maxY-b.minY};
-  }
+  function sizeFor(map){ const pts=Object.values(map).map(([x,y])=>[x,y]); const b=bounds(pts); return {w:b.maxX-b.minX,h:b.maxY-b.minY}; }
   const sL=sizeFor(LOCAL), sC=sizeFor(CANON);
   const reqX=Math.min(cellsW/sL.w,cellsW/sC.w), reqY=Math.min(cellsH/sL.h,cellsH/sC.h);
   LETTER_SCALE=Math.max(0.5,Math.min(SCALE_CAP,Math.min(reqX,reqY)));
@@ -159,10 +164,7 @@ function centerOffsetWithMargins(map){
   const all=Object.values(map).map(scaled), b=bounds(all);
   const w=b.maxX-b.minX, h=b.maxY-b.minY;
   const availW=(GRID_COLS-1)-2*MARGIN_X, availH=(GRID_ROWS-1)-2*MARGIN_Y;
-  return {
-    x:Math.round(MARGIN_X+(availW-w)/2-b.minX),
-    y:Math.round(MARGIN_Y+(availH-h)/2-b.minY)
-  };
+  return {x:Math.round(MARGIN_X+(availW-w)/2-b.minX), y:Math.round(MARGIN_Y+(availH-h)/2-b.minY)};
 }
 
 const H={}, SEG=[], ARC=[], GROUPS={W:[],I:[],R:[],E:[],D:[]};
@@ -170,28 +172,18 @@ let lastMovedLetter=null, lastMovedHandle=null, handleAdjacency={};
 let offLocal={x:0,y:0}, offCanon={x:0,y:0};
 let SEG_DRAW=[], ARC_DRAW=[];
 
+/* per-segment trails */
+const segTrail = {};
+const segMoving = {};
+function segKey(a,b){ return a<b ? `${a}|${b}` : `${b}|${a}`; }
+
 function keyOf(gx,gy){ return `${gx},${gy}`; }
-function buildOccupiedSet(excludeId=null){
-  const S=new Set();
-  for(const id in H){
-    if(id===excludeId) continue;
-    const b=H[id].base;
-    S.add(keyOf(b.gx,b.gy));
-  }
-  return S;
-}
-function occupied(gx,gy){
-  for(const id in H){
-    const b=H[id].base;
-    if(b.gx===gx && b.gy===gy) return true;
-  }
-  return false;
-}
+function buildOccupiedSet(excludeId=null){ const S=new Set(); for(const id in H){ if(id===excludeId) continue; const b=H[id].base; S.add(keyOf(b.gx,b.gy)); } return S; }
+function occupied(gx,gy){ for(const id in H){ const b=H[id].base; if(b.gx===gx&&b.gy===gy) return true;} return false; }
 
 function addHandle(letter,id,gx,gy,type,cgx,cgy){
   const p=gridToPx(gx,gy);
-  H[id]={
-    letter,type,
+  H[id]={letter,type,
     base:{gx,gy}, orig:{gx,gy}, canon:{gx:cgx,gy:cgy},
     cur:{x:p.x,y:p.y}, prev:{x:p.x,y:p.y}, tgt:{x:p.x,y:p.y},
     newBase:null,
@@ -240,37 +232,55 @@ function rebuild(){
 
   SEG_DRAW = SEG.slice().sort(()=>rand()-0.5);
   ARC_DRAW = ARC.slice().sort(()=>rand()-0.5);
+
+  for(const [a,b] of SEG_DRAW){ segMoving[segKey(a,b)]=false; segTrail[segKey(a,b)] = segTrail[segKey(a,b)] || []; }
+  for(const {a,b} of ARC_DRAW){ segMoving[segKey(a,b)]=false; segTrail[segKey(a,b)] = segTrail[segKey(a,b)] || []; }
 }
 
 /* W helpers for constraints */
-function wLeftEdge(){
-  const ids=['w0','w1'];
-  let mn=Infinity;
-  for(const id of ids) if(H[id]) mn=Math.min(mn,H[id].base.gx);
-  return isFinite(mn)?mn:LETTER_SPACING.W.minX;
-}
 function wRightEdge(){
-  const ids=['w0','w1','w2','w3','w4'];
-  let mx=-Infinity;
+  const ids=['w0','w1','w2','w3','w4']; let mx=-Infinity;
   for(const id of ids) if(H[id]) mx=Math.max(mx,H[id].base.gx);
   return isFinite(mx)?mx:LETTER_SPACING.W.maxX;
+}
+
+/* FIX 2: stable per-letter bands that cannot overlap */
+function bandFor(letter){
+  const b = {...LETTER_SPACING[letter]};
+  if(letter==='E'){
+    // E may have overhang, but never into D band
+    const maxE = Math.min(b.maxX + E_OVERHANG, SAFE_D_MIN - (LETTER_GAP + 1));
+    return {minX:b.minX, maxX:maxE};
+  }
+  if(letter==='D'){
+    return {minX:SAFE_D_MIN, maxX:b.maxX};
+  }
+  return b;
 }
 
 /* movement rules */
 function allowedShiftFor(id){
   const h=H[id], letter=h.letter, base=h.base;
 
+  /* FIX 3: vertical can roam freely; diagonal limited to 1 step max; keep X tight */
   const dirs=[];
-  for(const s of [1,2]){
-    dirs.push(
-      {dx:0,dy:-s},{dx:0,dy:s},{dx:-s,dy:0},{dx:s,dy:0},
-      {dx:-s,dy:-s},{dx:-s,dy:s},{dx:s,dy:-s},{dx:s,dy:s}
-    );
+
+  // vertical-only moves (lots of range)
+  for(let s=1; s<=Math.max(2, GRID_ROWS); s++){
+    dirs.push({dx:0,dy:-s},{dx:0,dy:s});
   }
+
+  // small horizontal moves (still tight)
+  for(let s=1; s<=2; s++){
+    dirs.push({dx:-s,dy:0},{dx:s,dy:0});
+  }
+
+  // diagonal: ONLY 1 step
+  dirs.push({dx:-1,dy:-1},{dx:-1,dy:1},{dx:1,dy:-1},{dx:1,dy:1});
+
   dirs.sort(()=>rand()-0.5);
 
-  const band={...LETTER_SPACING[letter]};
-  if(letter==='E') band.maxX+=E_OVERHANG;
+  const band=bandFor(letter);
   const occ=buildOccupiedSet(id);
   let chosen=null,nx,ny;
 
@@ -287,44 +297,31 @@ function allowedShiftFor(id){
     if(id==='rLegBot'){
       const devX=Math.max(-R_LEG_MAX_DEV,Math.min(R_LEG_MAX_DEV,nx-H[id].orig.gx));
       const devY=Math.max(-R_LEG_MAX_DEV,Math.min(R_LEG_MAX_DEV,ny-H[id].orig.gy));
-      nx=H[id].orig.gx+devX;
-      ny=H[id].orig.gy+devY;
+      nx=H[id].orig.gx+devX; ny=H[id].orig.gy+devY;
     }else{
-      if(Math.abs(nx-H[id].orig.gx)>MAX_DEVIATION)
-        nx=H[id].orig.gx+(nx>H[id].orig.gx?MAX_DEVIATION:-MAX_DEVIATION);
-      if(Math.abs(ny-H[id].orig.gy)>MAX_DEVIATION)
-        ny=H[id].orig.gy+(ny>H[id].orig.gy?MAX_DEVIATION:-MAX_DEVIATION);
+      // keep X deviation tight; do NOT clamp Y (vertical is allowed)
+      if(Math.abs(nx-H[id].orig.gx)>MAX_DEVIATION_X) nx=H[id].orig.gx+(nx>H[id].orig.gx?MAX_DEVIATION_X:-MAX_DEVIATION_X);
     }
 
     // W constraints
-    if((id==='w0' || id==='w1') && H.w2){
-      nx = Math.min(nx, H.w2.base.gx);
-    }
-    if(id==='w2' && (H.w0||H.w1)){
-      nx = Math.max(nx, Math.min(H.w0.base.gx, H.w1.base.gx));
-    }
-    if(id==='w4' && H.w2){
-      nx = Math.max(nx, H.w2.base.gx);
-    }
+    if((id==='w0' || id==='w1') && H.w2){ nx = Math.min(nx, H.w2.base.gx); }
+    if(id==='w2' && (H.w0||H.w1)){ nx = Math.max(nx, Math.min(H.w0.base.gx, H.w1.base.gx)); }
+    if(id==='w4' && H.w2){ nx = Math.max(nx, H.w2.base.gx); }
 
-    // Keep I to the right of W
+    // Keep I to the right of W (and preserve gap)
     if(id.startsWith('i')){
-      const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + 1);
+      const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + (LETTER_GAP + 1));
       nx = Math.max(minIX, nx);
     }
 
-    // clamp to <=2 cells from current base
-    nx=Math.max(base.gx-2,Math.min(base.gx+2,nx));
-    ny=Math.max(base.gy-2,Math.min(base.gy+2,ny));
-
+    // clamp within letter band (no overlap between letters)
     nx=Math.max(band.minX,Math.min(band.maxX,nx));
+
+    // clamp within grid
     nx=Math.max(0,Math.min(GRID_COLS-1,nx));
     ny=Math.max(0,Math.min(GRID_ROWS-1,ny));
 
-    if(!occ.has(keyOf(nx,ny))){
-      chosen={nx,ny};
-      break;
-    }
+    if(!occ.has(keyOf(nx,ny))){ chosen={nx,ny}; break; }
   }
   if(!chosen) return;
 
@@ -338,12 +335,13 @@ function allowedShiftFor(id){
     let half = Math.round((H[right].base.gx - H[left].base.gx)/2);
     half = Math.max(2, Math.min(3, half));
     let cx = (id===left) ? (chosen.nx + half) : (chosen.nx - half);
-    const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + 1);
+
+    const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + (LETTER_GAP + 1));
     cx = Math.max(minIX + half, Math.min(LETTER_SPACING.I.maxX - half, cx));
+
     const gxL = cx - half, gxR = cx + half;
 
-    const lp=gridToPx(gxL,barY), rp=gridToPx(gxR,barY),
-          sp=gridToPx(cx, H[stem].base.gy);
+    const lp=gridToPx(gxL,barY), rp=gridToPx(gxR,barY), sp=gridToPx(cx, H[stem].base.gy);
     H[left].tgt.x=lp.x; H[left].tgt.y=lp.y; H[left].newBase={gx:gxL,gy:barY};
     H[right].tgt.x=rp.x; H[right].tgt.y=rp.y; H[right].newBase={gx:gxR,gy:barY};
     H[stem].tgt.x=sp.x; H[stem].tgt.y=sp.y; H[stem].newBase={gx:cx,gy:H[stem].base.gy};
@@ -356,10 +354,16 @@ function allowedShiftFor(id){
     if(id!==Lid) return;
     const dx=chosen.nx-base.gx;
     const L=H[Lid], R=H[Rid];
+
     let gx=R.base.gx+dx, gy=R.base.gy;
     const required = Math.max(minLen, MIN_E_SPAN);
-    gx=Math.max(gx,L.base.gx+required);
-    gx=Math.min(gx,LETTER_SPACING.E.maxX+E_OVERHANG);
+
+    gx=Math.max(gx, L.base.gx+required);
+
+    // never allow E to push into D band
+    const eBand = bandFor('E');
+    gx=Math.min(gx, eBand.maxX);
+
     gy=Math.max(0,Math.min(GRID_ROWS-1,gy));
     if(!occupied(gx,gy)){
       const pp=gridToPx(gx,gy);
@@ -375,34 +379,19 @@ function allowedShiftFor(id){
 function pickMovable(){
   const ids = Object.keys(H);
   if(!ids.length) return null;
-  if(!STARTED){
-    return ids[Math.floor(rand()*ids.length)];
-  }
+  if(!STARTED){ return ids[Math.floor(rand()*ids.length)]; }
   const byLetter = {};
-  for(const id of ids){
-    const L=H[id].letter;
-    (byLetter[L]??=[]).push(id);
-  }
+  for(const id of ids){ const L=H[id].letter; (byLetter[L]??=[]).push(id); }
   const letters=Object.keys(byLetter);
-  let pool=letters.filter(L=>L!==lastMovedLetter);
-  if(!pool.length) pool=letters;
+  let pool=letters.filter(L=>L!==lastMovedLetter); if(!pool.length) pool=letters;
   const L=pool[Math.floor(rand()*pool.length)];
   const neighborBlock=new Set();
-  if(lastMovedHandle && handleAdjacency[lastMovedHandle]){
-    for(const n of handleAdjacency[lastMovedHandle]) neighborBlock.add(n);
-  }
+  if(lastMovedHandle&&handleAdjacency[lastMovedHandle]) for(const n of handleAdjacency[lastMovedHandle]) neighborBlock.add(n);
   if(lastMovedHandle) neighborBlock.add(lastMovedHandle);
   const cands=byLetter[L].filter(id=>!neighborBlock.has(id));
-  const chosenArr = (cands.length?cands:byLetter[L]);
-  return chosenArr[Math.floor(rand()*chosenArr.length)];
+  return (cands.length?cands:byLetter[L])[Math.floor(rand()*(cands.length?cands.length:byLetter[L].length))];
 }
-function retargetOnePoint(){
-  const id=pickMovable();
-  if(!id) return;
-  allowedShiftFor(id);
-  lastMovedLetter=H[id].letter;
-  lastMovedHandle=id;
-}
+function retargetOnePoint(){ const id=pickMovable(); if(!id) return; allowedShiftFor(id); lastMovedLetter=H[id].letter; lastMovedHandle=id; }
 
 /* ====== TIME API: get 5s bucket from server time ====== */
 async function getTimeBucketFromAPI(){
@@ -417,7 +406,7 @@ async function getTimeBucketFromAPI(){
   }
 }
 
-/* scheduler (every 5s) */
+/* scheduler */
 let devTimer=null;
 function startScheduler(){
   if(devTimer) clearInterval(devTimer);
@@ -430,17 +419,14 @@ function startScheduler(){
   devTimer = setInterval(tick, DEV_INTERVAL_MS);
 }
 
-/* one-time random API seed to vary first layout per load */
+/* one-time random API seed */
 async function connectRandomAPI(){
   try{
     const res = await fetch('https://random-data_api.com/api/v2/users?size=1', {cache:'no-store'});
     if(!res.ok) throw new Error('Random API error');
     const data = await res.json();
     const seedStr = (data && (data.id || data.uid || data.first_name || JSON.stringify(data))) + '';
-    let seed = 0;
-    for(let i=0;i<seedStr.length;i++){
-      seed = (seed*131 + seedStr.charCodeAt(i))>>>0;
-    }
+    let seed = 0; for(let i=0;i<seedStr.length;i++){ seed = (seed*131 + seedStr.charCodeAt(i))>>>0; }
     reseed(seed);
   }catch(e){
     reseed((Date.now() ^ salt32())>>>0);
@@ -452,45 +438,68 @@ async function connectRandomAPI(){
   }
 }
 
-/* fan-curve helpers (now only for live stroke, no trails) */
+/* fan-curve helpers */
 function controlForR(ax,ay,bx,by){
   const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
   const k=Math.min(3.5,dist*0.18);
   const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
-  const x = Math.max(padX,Math.min(width-padX,mx+k*cw()));
-  const y = Math.max(padY,Math.min(height-padY,my));
-  return {x,y};
+  return {x:Math.max(padX,Math.min(width-padX,mx+k*cw())),y:Math.max(padY,Math.min(height-padY,my))};
 }
 function controlForD(ax,ay,bx,by){
   const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
-  // Keep control point inside D’s horizontal band so its bounding box
-  // never crosses into neighboring letters.
-  const side=8+dist*0.4;
+  const side=28+dist*0.8;
   const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
-  let x = mx+side*cw();
-  let y = my;
-  const dBand = LETTER_SPACING.D;
-  const minPx = (dBand.minX)*cw()+padX;
-  const maxPx = (dBand.maxX)*cw()-padX;
-  x = Math.max(minPx,Math.min(maxPx,x));
-  y = Math.max(padY,Math.min(height-padY,y));
-  return {x,y};
+  return {x:Math.max(padX,Math.min(width-padX,mx+side*cw())),y:Math.max(padY,Math.min(height-padY,my))};
+}
+
+/* theme */
+let INVERT=false;
+function fg(){ return INVERT ? 255 : 0; }
+function bg(){ return INVERT ? 0 : 255; }
+function applyTheme(){
+  document.body.classList.toggle('invert', INVERT);
+  document.documentElement.style.setProperty('--bg', INVERT ? '#000' : '#fff');
+  document.documentElement.style.setProperty('--fg', INVERT ? '#fff' : '#000');
 }
 
 /* draw helpers */
+function drawFanTrailForSegment(key,kind){
+  const samples = segTrail[key];
+  if(!samples || samples.length<2) return;
+  for(let i=0;i<samples.length-1;i++){
+    const t=i/(samples.length-1);
+    const alpha = 40 + (1-Math.sqrt(1-t))*160;
+    stroke(fg(),alpha);
+    strokeWeight(FAN_W);
+    noFill();
+    const s = samples[i];
+    if(!kind){
+      line(s.ax,s.ay,s.bx,s.by);
+    }else{
+      const c = (kind==='R') ? controlForR(s.ax,s.ay,s.bx,s.by)
+                             : controlForD(s.ax,s.ay,s.bx,s.by);
+      beginShape(); vertex(s.ax,s.ay); quadraticVertex(c.x,c.y,s.bx,s.by); endShape();
+    }
+  }
+}
+
 function setup(){
   createCanvas(windowWidth, windowHeight);
-  computeBestScale();
-  offLocal=centerOffsetWithMargins(LOCAL);
-  offCanon=centerOffsetWithMargins(CANON);
+  computeBestScale(); offLocal=centerOffsetWithMargins(LOCAL); offCanon=centerOffsetWithMargins(CANON);
   rebuild();
   connectRandomAPI();
+
+  // switch
+  const sw = document.getElementById('themeSwitch');
+  sw.addEventListener('change', (e)=>{
+    INVERT = !!e.target.checked;
+    applyTheme();
+  });
+  applyTheme();
 }
 function windowResized(){
   resizeCanvas(windowWidth,windowHeight);
-  computeBestScale();
-  offLocal=centerOffsetWithMargins(LOCAL);
-  offCanon=centerOffsetWithMargins(CANON);
+  computeBestScale(); offLocal=centerOffsetWithMargins(LOCAL); offCanon=centerOffsetWithMargins(CANON);
   rebuild();
 }
 
@@ -508,81 +517,79 @@ function enforceIAlignment(){
   H.iBotR.cur.y = H.iBot.cur.y;
   const gxTop = pxToGridX(H.iTop.tgt.x, H.iTop.base.gy);
   const gxBot = pxToGridX(H.iBot.tgt.x, H.iBot.base.gy);
-  if (Math.abs(H.iTop.tgt.x - H.iTop.cur.x) < 0.6)
-    H.iTop.newBase = {gx:gxTop, gy:H.iTop.base.gy};
-  if (Math.abs(H.iBot.tgt.x - H.iBot.cur.x) < 0.6)
-    H.iBot.newBase = {gx:gxBot, gy:H.iBot.base.gy};
+  if (Math.abs(H.iTop.tgt.x - H.iTop.cur.x) < 0.6)  H.iTop.newBase = {gx:gxTop, gy:H.iTop.base.gy};
+  if (Math.abs(H.iBot.tgt.x - H.iBot.cur.x) < 0.6)  H.iBot.newBase = {gx:gxBot, gy:H.iBot.base.gy};
 }
 
 function draw(){
-  background(invert ? 0 : 255);
+  background(bg());
 
-  // optional (invisible) grid
-  noStroke();
-  fill(invert ? 255 : 0, GRID_DOT_ALPHA);
-  for(let gy=0; gy<GRID_ROWS; gy++){
+  // grid dots (invisible)
+  noStroke(); fill(fg(),GRID_DOT_ALPHA);
+  for(let gy=0; gy<GRID_ROWS; gy++)
     for(let gx=0; gx<GRID_COLS; gx++){
-      const p=gridToPx(gx,gy);
-      circle(p.x,p.y,GRID_DOT_SIZE);
+      const p=gridToPx(gx,gy); circle(p.x,p.y,GRID_DOT_SIZE);
     }
-  }
 
-  // ease positions
+  // ease positions + detect motion
+  const movedHandles = new Set();
   for(const id in H){
     const h=H[id];
+    const px=h.cur.x, py=h.cur.y;
     h.cur.x += (h.tgt.x-h.cur.x)*EASING;
     h.cur.y += (h.tgt.y-h.cur.y)*EASING;
+    if(Math.hypot(h.cur.x-px,h.cur.y-py) > 0.05) movedHandles.add(id);
 
-    if(h.newBase &&
-       Math.abs(h.tgt.x-h.cur.x)<0.5 &&
-       Math.abs(h.tgt.y-h.cur.y)<0.5){
-      h.base.gx=h.newBase.gx;
-      h.base.gy=h.newBase.gy;
-      h.newBase=null;
+    if(h.newBase && Math.abs(h.tgt.x-h.cur.x)<0.5 && Math.abs(h.tgt.y-h.cur.y)<0.5){
+      h.base.gx=h.newBase.gx; h.base.gy=h.newBase.gy; h.newBase=null;
     }
   }
 
   // enforce horizontals
-  if(H.iTop&&H.iTopL&&H.iTopR){
-    H.iTopL.cur.y=H.iTop.cur.y;
-    H.iTopR.cur.y=H.iTop.cur.y;
-  }
-  if(H.iBot&&H.iBotL&&H.iBotR){
-    H.iBotL.cur.y=H.iBot.cur.y;
-    H.iBotR.cur.y=H.iBot.cur.y;
-  }
+  if(H.iTop&&H.iTopL&&H.iTopR){ H.iTopL.cur.y=H.iTop.cur.y; H.iTopR.cur.y=H.iTop.cur.y; }
+  if(H.iBot&&H.iBotL&&H.iBotR){ H.iBotL.cur.y=H.iBot.cur.y; H.iBotR.cur.y=H.iBot.cur.y; }
   if(H.eLTop&&H.eRTop) H.eRTop.cur.y=H.eLTop.cur.y;
   if(H.eLMid&&H.eRMid) H.eRMid.cur.y=H.eLMid.cur.y;
   if(H.eLBot&&H.eRBot) H.eRBot.cur.y=H.eLBot.cur.y;
 
   enforceIAlignment();
 
-  // live skeleton (no trails, just clean strokes)
-  stroke(invert ? 255 : 0);
-  strokeWeight(STROKE_W);
-  noFill();
+  // trail bookkeeping
+  const touchSeg = (a,b,kind)=>{
+    const key = segKey(a,b);
+    const A=H[a], B=H[b];
+    const anyMoved = movedHandles.has(a) || movedHandles.has(b);
+    if(anyMoved){
+      if(!segMoving[key]) segTrail[key]=[];
+      segMoving[key]=true;
+      const s = {ax:A.cur.x, ay:A.cur.y, bx:B.cur.x, by:B.cur.y};
+      segTrail[key].push(s);
+      if(segTrail[key].length>TRAIL_SAMPLE_CAP) segTrail[key].shift();
+    }else{
+      segMoving[key]=false;
+    }
+  };
 
-  for(const [a,b] of SEG_DRAW){
-    const A=H[a],B=H[b];
-    line(A.cur.x,A.cur.y,B.cur.x,B.cur.y);
-  }
+  for(const [a,b] of SEG_DRAW) touchSeg(a,b,null);
+  for(const {a,b,kind} of ARC_DRAW) touchSeg(a,b,kind);
+
+  // draw trails (matches current theme)
+  for(const [a,b] of SEG_DRAW) drawFanTrailForSegment(segKey(a,b),null);
+  for(const {a,b,kind} of ARC_DRAW) drawFanTrailForSegment(segKey(a,b),kind);
+
+  // live skeleton
+  stroke(fg()); strokeWeight(STROKE_W); noFill();
+  for(const [a,b] of SEG_DRAW){ const A=H[a],B=H[b]; line(A.cur.x,A.cur.y,B.cur.x,B.cur.y); }
   for(const {a,b,kind} of ARC_DRAW){
     const A=H[a],B=H[b];
-    const c=(kind==='R') ? controlForR(A.cur.x,A.cur.y,B.cur.x,B.cur.y)
-                         : controlForD(A.cur.x,A.cur.y,B.cur.x,B.cur.y);
-    beginShape();
-    vertex(A.cur.x,A.cur.y);
-    quadraticVertex(c.x,c.y,B.cur.x,B.cur.y);
-    endShape();
+    const c=(kind==='R')?controlForR(A.cur.x,A.cur.y,B.cur.x,B.cur.y)
+                        :controlForD(A.cur.x,A.cur.y,B.cur.x,B.cur.y);
+    beginShape(); vertex(A.cur.x,A.cur.y); quadraticVertex(c.x,c.y,B.cur.x,B.cur.y); endShape();
   }
 
   // anchors
-  noStroke();
-  fill(invert ? 255 : 0, ANCHOR_ALPHA);
-  for(const id in H){
-    const h=H[id];
-    circle(h.cur.x,h.cur.y,ANCHOR_SIZE);
-  }
+  noStroke(); fill(fg(),ANCHOR_ALPHA);
+  for(const id in H){ const h=H[id]; circle(h.cur.x,h.cur.y,ANCHOR_SIZE); }
 }
 </script>
 </body>
