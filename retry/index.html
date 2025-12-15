@@ -13,31 +13,51 @@
   }
   canvas{display:block}
 
-  /* circular toggle button (no text) */
+  /* toggle switch (no text) */
   #modeToggle{
     position:fixed;
     top:12px;
     right:12px;
-    width:24px;
-    height:24px;
+    width:40px;
+    height:22px;
     border-radius:999px;
-    border:1px solid rgba(0,0,0,0.6);
-    background:#ffffff;
-    cursor:pointer;
-    z-index:10;
+    border:1px solid rgba(0,0,0,0.4);
+    background:#f5f5f5;
     box-shadow:0 0 0 1px rgba(0,0,0,0.05);
+    cursor:pointer;
+    padding:0;
+    display:flex;
+    align-items:center;
+    justify-content:flex-start;
+    box-sizing:border-box;
+    z-index:10;
   }
-  #modeToggle.dark{
+  #modeToggleKnob{
+    width:18px;
+    height:18px;
+    border-radius:50%;
+    background:#000;
+    margin-left:2px;
+    transition:transform 0.18s ease-out, background-color 0.18s ease-out;
+  }
+  #modeToggle.on{
     border-color:rgba(255,255,255,0.7);
-    background:#000000;
-    box-shadow:0 0 0 1px rgba(255,255,255,0.15);
+    background:#111;
+    box-shadow:0 0 0 1px rgba(255,255,255,0.1);
+    justify-content:flex-end;
+  }
+  #modeToggle.on #modeToggleKnob{
+    background:#fff;
+    transform:translateX(-2px);
   }
 </style>
 <link rel="icon" type="image/png" href="favicon.png">
 </head>
 <body>
 
-<button id="modeToggle" aria-label="Toggle color mode"></button>
+<button id="modeToggle" aria-label="Toggle color mode">
+  <div id="modeToggleKnob"></div>
+</button>
 
 <script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
 <script>
@@ -52,19 +72,19 @@ const DEV_INTERVAL_MS = 10000;
 let MOVEMENT_ENABLED = false;
 let STARTED = false;
 
-/* bounds (anisotropic: more vertical than horizontal) */
+/* anisotropic deviation: more vertical than horizontal */
 const MAX_DEV_X = 1;   // max 1 cell sideways
 const MAX_DEV_Y = 2;   // up to 2 cells vertically
 
 /* ========== DRAW STYLE ========== */
 const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0;
 const ANCHOR_SIZE=8, ANCHOR_ALPHA=255;
-const STROKE_W=7;           // thicker stroke
-const FAN_W_FACTOR = 0.45;  // trails slightly thinner than stroke
+const STROKE_W=7;            // thicker strokes
+const FAN_W_FACTOR = 0.45;   // trail thinner than stroke
 const EASING=0.12;
 
 /* trails */
-const TRAIL_SAMPLE_CAP = 40; // shorter trails
+const TRAIL_SAMPLE_CAP = 40;
 
 /* caches */
 let E_LEN={top:0,mid:0,bot:0};
@@ -73,14 +93,11 @@ const MIN_E_SPAN = 3;
 
 /* THEME (false = black on white, true = white on black) */
 let invert = false;
-const modeBtn = document.getElementById('modeToggle');
-modeBtn.addEventListener('click', () => {
+const toggleBtn = document.getElementById('modeToggle');
+toggleBtn.addEventListener('click', () => {
   invert = !invert;
-  if(invert){
-    modeBtn.classList.add('dark');
-  }else{
-    modeBtn.classList.remove('dark');
-  }
+  if(invert) toggleBtn.classList.add('on');
+  else toggleBtn.classList.remove('on');
 });
 
 /* RNG */
@@ -130,19 +147,22 @@ const LETTER_SPACING={
 const E_SHIFT=-2; LETTER_SPACING.E.minX+=E_SHIFT; LETTER_SPACING.E.maxX+=E_SHIFT;
 const D_SHIFT=-2; LETTER_SPACING.D.minX+=D_SHIFT; LETTER_SPACING.D.maxX+=D_SHIFT;
 
+/* local positions (in letter-space) */
 const LOCAL={
   w0:[0,0],w1:[2,10],w2:[4.5,5],w3:[7,10],w4:[9,0],
   iTop:[12.5,0],iBot:[12.5,10], iTopL:[11,0],iTopR:[14,0], iBotL:[11,10],iBotR:[14,10],
   rTop:[17,0],rBot:[17,10],rMid:[17,5], rBowlTop:[18,1],rBowlBot:[19,4], rLegBot:[23,10],
   eLTop:[27,0],eRTop:[33,0], eLBot:[27,10],eRBot:[33,10], eLMid:[27,5],eRMid:[32,5],
-  dStemTop:[36,0],dStemBot:[36,10], dA:[37,1],dB:[37,9]
+  // D bowl mirrored to LEFT of the stem
+  dStemTop:[36,0],dStemBot:[36,10], dA:[35,1],dB:[35,9]
 };
+/* canonical version (straighter / more regular) */
 const CANON={
   w0:[0,0],w1:[2,10],w2:[4.5,5],w3:[7,10],w4:[9,0],
   iTop:[12.5,0],iBot:[12.5,10], iTopL:[11.5,0],iTopR:[13.5,0], iBotL:[11.5,10],iBotR:[13.5,10],
   rTop:[17,0],rBot:[17,10],rMid:[17,5], rBowlTop:[17,0],rBowlBot:[19,3], rLegBot:[22,10],
   eLTop:[27,0],eRTop:[31,0], eLBot:[27,10],eRBot:[31,10], eLMid:[27,5],eRMid:[30,5],
-  dStemTop:[36,0],dStemBot:[36,10], dA:[37,1],dB:[37,9]
+  dStemTop:[36,0],dStemBot:[36,10], dA:[35,1],dB:[35,9] // mirrored left
 };
 
 function computeBestScale(){
@@ -248,26 +268,19 @@ function rebuild(){
   SEG_DRAW = SEG.slice().sort(()=>rand()-0.5);
   ARC_DRAW = ARC.slice().sort(()=>rand()-0.5);
 
-  // initialise trail state
   for(const [a,b] of SEG_DRAW){
-    const key = segKey(a,b);
-    segMoving[key]=false;
-    if(!segTrail[key]) segTrail[key]=[];
+    const k=segKey(a,b);
+    segMoving[k]=false;
+    if(!segTrail[k]) segTrail[k]=[];
   }
   for(const {a,b} of ARC_DRAW){
-    const key = segKey(a,b);
-    segMoving[key]=false;
-    if(!segTrail[key]) segTrail[key]=[];
+    const k=segKey(a,b);
+    segMoving[k]=false;
+    if(!segTrail[k]) segTrail[k]=[];
   }
 }
 
-/* W helpers for constraints */
-function wLeftEdge(){
-  const ids=['w0','w1'];
-  let mn=Infinity;
-  for(const id of ids) if(H[id]) mn=Math.min(mn,H[id].base.gx);
-  return isFinite(mn)?mn:LETTER_SPACING.W.minX;
-}
+/* helpers for W / I bands */
 function wRightEdge(){
   const ids=['w0','w1','w2','w3','w4'];
   let mx=-Infinity;
@@ -281,12 +294,10 @@ function allowedShiftFor(id){
 
   const dirs=[];
   for(const s of [1,2]){
-    // axial moves
     dirs.push(
       {dx:0,dy:-s},{dx:0,dy:s},
       {dx:-s,dy:0},{dx:s,dy:0}
     );
-    // diagonals only for step 1 (so max 1 cell diagonally)
     if(s===1){
       dirs.push(
         {dx:-1,dy:-1},{dx:-1,dy:1},
@@ -304,7 +315,7 @@ function allowedShiftFor(id){
   for(const d of dirs){
     nx=base.gx+d.dx; ny=base.gy+d.dy;
 
-    // R constraints
+    // R mid constraint
     if(id==='rMid'){
       const sx=H.rTop.base.gx;
       nx=Math.min(Math.max(nx,sx),sx+1);
@@ -312,7 +323,7 @@ function allowedShiftFor(id){
       ny=Math.max(minY,Math.min(maxY,ny));
     }
 
-    // anisotropic deviation from original position
+    // anisotropic deviation from original point
     if(id==='rLegBot'){
       const devX=Math.max(-MAX_DEV_X,Math.min(MAX_DEV_X,nx-H[id].orig.gx));
       const devY=Math.max(-MAX_DEV_Y,Math.min(MAX_DEV_Y,ny-H[id].orig.gy));
@@ -342,7 +353,7 @@ function allowedShiftFor(id){
       nx = Math.max(minIX, nx);
     }
 
-    // clamp to <=2 cells from current base
+    // clamp to <=2 cells from base
     nx=Math.max(base.gx-2,Math.min(base.gx+2,nx));
     ny=Math.max(base.gy-2,Math.min(base.gy+2,ny));
 
@@ -358,7 +369,9 @@ function allowedShiftFor(id){
   if(!chosen) return;
 
   const p=gridToPx(chosen.nx,chosen.ny);
-  h.tgt.x=p.x; h.tgt.y=p.y; h.newBase={gx:chosen.nx,gy:chosen.ny};
+  h.tgt.x=p.x;
+  h.tgt.y=p.y;
+  h.newBase={gx:chosen.nx,gy:chosen.ny};
 
   /* I: bars drive the stem (center-locked) */
   const driveStemFromBar = (left,right,stem)=>{
@@ -380,7 +393,7 @@ function allowedShiftFor(id){
   driveStemFromBar('iTopL','iTopR','iTop');
   driveStemFromBar('iBotL','iBotR','iBot');
 
-  // E spans follow left anchors, and NEVER shorter than MIN_E_SPAN
+  // E spans follow left anchors; keep min length + within band
   const keepE=(Lid,Rid,minLen)=>{
     if(id!==Lid) return;
     const dx=chosen.nx-base.gx;
@@ -433,7 +446,7 @@ function retargetOnePoint(){
   lastMovedHandle=id;
 }
 
-/* ====== TIME API: get 5s bucket from server time ====== */
+/* ====== TIME API: get 10s bucket from server time ====== */
 async function getTimeBucketFromAPI(){
   try{
     const res = await fetch('https://worldtimeapi.org/api/ip', { cache: 'no-store' });
@@ -446,7 +459,7 @@ async function getTimeBucketFromAPI(){
   }
 }
 
-/* scheduler (every 5s) */
+/* scheduler (every 10s) */
 let devTimer=null;
 function startScheduler(){
   if(devTimer) clearInterval(devTimer);
@@ -459,7 +472,7 @@ function startScheduler(){
   devTimer = setInterval(tick, DEV_INTERVAL_MS);
 }
 
-/* one-time random API seed to vary first layout per load */
+/* one-time random API seed */
 async function connectRandomAPI(){
   try{
     const res = await fetch('https://random-data_api.com/api/v2/users?size=1', {cache:'no-store'});
@@ -486,7 +499,7 @@ function controlForR(ax,ay,bx,by){
   const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
   const k=Math.min(3.5,dist*0.18);
   const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
-  let x = mx+k*cw();
+  let x = mx + k*cw();
   let y = my;
   x = Math.max(padX,Math.min(width-padX,x));
   y = Math.max(padY,Math.min(height-padY,y));
@@ -496,7 +509,8 @@ function controlForD(ax,ay,bx,by){
   const mx=(ax+bx)/2,my=(ay+by)/2,dist=Math.hypot(bx-ax,by-ay);
   const side=8+dist*0.4;
   const padX=cw()*MARGIN_X,padY=ch()*MARGIN_Y;
-  let x = mx+side*cw();
+  // move control to LEFT of stem
+  let x = mx - side*cw();
   let y = my;
   const dBand = LETTER_SPACING.D;
   const minPx = (dBand.minX)*cw()+padX;
@@ -512,7 +526,7 @@ function drawFanTrailForSegment(aH,bH,key,kind){
   if(!samples || samples.length<2) return;
   for(let i=0;i<samples.length-1;i++){
     const t=i/(samples.length-1);
-    const alpha = 35 + (1 - t)*(90); // fade out
+    const alpha = 35 + (1 - t)*(90);
     stroke(invert ? 255 : 0, alpha);
     strokeWeight(STROKE_W * FAN_W_FACTOR);
     noFill();
@@ -540,7 +554,6 @@ function setup(){
   connectRandomAPI();
 }
 function windowResized(){
-  resizeCanvas(windowHeight, windowHeight);
   resizeCanvas(windowWidth,windowHeight);
   computeBestScale();
   offLocal=centerOffsetWithMargins(LOCAL);
@@ -639,7 +652,7 @@ function draw(){
   for(const {a,b,kind} of ARC_DRAW)
     drawFanTrailForSegment(H[a],H[b],segKey(a,b),kind);
 
-  // live skeleton
+  // live skeleton strokes
   stroke(invert ? 255 : 0);
   strokeWeight(STROKE_W);
   noFill();
