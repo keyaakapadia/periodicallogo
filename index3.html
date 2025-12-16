@@ -7,11 +7,42 @@
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
   canvas{display:block}
+
+  /* top-right toggle switch */
+  .modeSwitch{
+    position:fixed; top:18px; right:18px; z-index:20;
+    width:56px; height:30px;
+    display:flex; align-items:center; justify-content:center;
+    user-select:none;
+  }
+  .modeSwitch input{display:none}
+  .modeSwitch label{
+    width:56px; height:30px; border-radius:999px;
+    border:2px solid rgba(255,255,255,.85);
+    box-sizing:border-box;
+    background:transparent;
+    position:relative; cursor:pointer;
+  }
+  .modeSwitch label::after{
+    content:"";
+    position:absolute; top:50%; transform:translateY(-50%);
+    left:4px;
+    width:22px; height:22px; border-radius:999px;
+    background:rgba(255,255,255,.9);
+    transition:transform .18s ease, left .18s ease;
+  }
+  .modeSwitch input:checked + label::after{
+    left:30px;
+  }
 </style>
-<!-- Same favicon -->
 <link rel="icon" type="image/png" href="favicon.png">
 </head>
 <body>
+
+<div class="modeSwitch" aria-label="Go to index4">
+  <input id="toIndex4" type="checkbox" />
+  <label for="toIndex4"></label>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
 <script>
@@ -22,7 +53,6 @@ let LETTER_SCALE = 1.0;
 const SCALE_CAP  = 1.0;
 
 /* ========== MOTION ========== */
-/* every 5 seconds */
 const DEV_INTERVAL_MS = 5000;
 let MOVEMENT_ENABLED = false;
 let STARTED = false;
@@ -31,14 +61,14 @@ let STARTED = false;
 const MAX_DEVIATION=2, R_LEG_STEP=1, R_LEG_MAX_DEV=3;
 
 /* ========== DRAW STYLE ========== */
-const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0; // ← background dots at 0%
-const ANCHOR_SIZE=7, ANCHOR_ALPHA=255;   // end dots: 7
-const STROKE_W=5;                        // main stroke: 5
+const GRID_DOT_SIZE=4, GRID_DOT_ALPHA=0;
+const ANCHOR_SIZE=7, ANCHOR_ALPHA=255;
+const STROKE_W=5;
 const FAN_W=1.2;
 const EASING=0.12;
 
 /* trails */
-const TRAIL_SAMPLE_CAP = 120;      // cap samples kept per segment trail (visual length)
+const TRAIL_SAMPLE_CAP = 120;
 
 /* caches */
 let E_LEN={top:0,mid:0,bot:0};
@@ -104,14 +134,61 @@ let lastMovedLetter=null, lastMovedHandle=null, handleAdjacency={};
 let offLocal={x:0,y:0}, offCanon={x:0,y:0};
 let SEG_DRAW=[], ARC_DRAW=[];
 
-/* per-segment trails: persist until that segment moves again */
-const segTrail = {};             // key -> array of {ax,ay,bx,by}
-const segMoving = {};            // key -> boolean (are its endpoints moving this frame?)
+/* per-segment trails */
+const segTrail = {};
+const segMoving = {};
 function segKey(a,b){ return a<b ? `${a}|${b}` : `${b}|${a}`; }
 
 function keyOf(gx,gy){ return `${gx},${gy}`; }
-function buildOccupiedSet(excludeId=null){ const S=new Set(); for(const id in H){ if(id===excludeId) continue; const b=H[id].base; S.add(keyOf(b.gx,b.gy)); } return S; }
-function occupied(gx,gy){ for(const id in H){ const b=H[id].base; if(b.gx===gx&&b.gy===gy) return true;} return false; }
+function buildOccupiedSet(excludeId=null){
+  const S=new Set();
+  for(const id in H){
+    if(id===excludeId) continue;
+    const b=H[id].base;
+    S.add(keyOf(b.gx,b.gy));
+  }
+  return S;
+}
+function occupied(gx,gy){
+  for(const id in H){
+    const b=H[id].base;
+    if(b.gx===gx&&b.gy===gy) return true;
+  }
+  return false;
+}
+
+/* ===== letter-level bounding boxes (grid space) ===== */
+const LETTER_PAD = 1; // one-cell buffer between letter boxes
+function letterBox(letter, overrideBases=null){
+  const ids = GROUPS[letter] || [];
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const id of ids){
+    const b = (overrideBases && overrideBases[id]) ? overrideBases[id] : H[id].base;
+    if(!b) continue;
+    minX=Math.min(minX,b.gx); maxX=Math.max(maxX,b.gx);
+    minY=Math.min(minY,b.gy); maxY=Math.max(maxY,b.gy);
+  }
+  if(!isFinite(minX)) return null;
+  return {minX,maxX,minY,maxY};
+}
+function boxesOverlap(a,b,pad=0){
+  if(!a || !b) return false;
+  return !(
+    (a.maxX+pad) < (b.minX-pad) ||
+    (a.minX-pad) > (b.maxX+pad) ||
+    (a.maxY+pad) < (b.minY-pad) ||
+    (a.minY-pad) > (b.maxY+pad)
+  );
+}
+function letterWouldOverlap(letter, proposedBases){
+  const myBox = letterBox(letter, proposedBases);
+  for(const L of Object.keys(GROUPS)){
+    if(L===letter) continue;
+    const otherBox = letterBox(L, null);
+    if(boxesOverlap(myBox, otherBox, LETTER_PAD)) return true;
+  }
+  return false;
+}
 
 function addHandle(letter,id,gx,gy,type,cgx,cgy){
   const p=gridToPx(gx,gy);
@@ -165,17 +242,11 @@ function rebuild(){
   SEG_DRAW = SEG.slice().sort(()=>rand()-0.5);
   ARC_DRAW = ARC.slice().sort(()=>rand()-0.5);
 
-  // (re)init segment trail state
   for(const [a,b] of SEG_DRAW){ segMoving[segKey(a,b)]=false; segTrail[segKey(a,b)] = segTrail[segKey(a,b)] || []; }
   for(const {a,b} of ARC_DRAW){ segMoving[segKey(a,b)]=false; segTrail[segKey(a,b)] = segTrail[segKey(a,b)] || []; }
 }
 
 /* W helpers for constraints */
-function wLeftEdge(){
-  const ids=['w0','w1']; let mn=Infinity;
-  for(const id of ids) if(H[id]) mn=Math.min(mn,H[id].base.gx);
-  return isFinite(mn)?mn:LETTER_SPACING.W.minX;
-}
 function wRightEdge(){
   const ids=['w0','w1','w2','w3','w4']; let mx=-Infinity;
   for(const id of ids) if(H[id]) mx=Math.max(mx,H[id].base.gx);
@@ -194,10 +265,10 @@ function allowedShiftFor(id){
 
   const band={...LETTER_SPACING[letter]}; if(letter==='E') band.maxX+=E_OVERHANG;
   const occ=buildOccupiedSet(id);
-  let chosen=null,nx,ny;
 
   for(const d of dirs){
-    nx=base.gx+d.dx; ny=base.gy+d.dy;
+    let nx=base.gx+d.dx;
+    let ny=base.gy+d.dy;
 
     // R constraints
     if(id==='rMid'){
@@ -233,47 +304,66 @@ function allowedShiftFor(id){
     nx=Math.max(band.minX,Math.min(band.maxX,nx)); nx=Math.max(0,Math.min(GRID_COLS-1,nx));
     ny=Math.max(0,Math.min(GRID_ROWS-1,ny));
 
-    if(!occ.has(keyOf(nx,ny))){ chosen={nx,ny}; break; }
+    // propose bases for this move (including coupled changes)
+    const proposed = {};
+    proposed[id] = {gx:nx, gy:ny};
+
+    // I: bars drive the stem (center-locked)
+    const proposeDriveStemFromBar = (left,right,stem)=>{
+      if(id!==left && id!==right) return;
+      const barY = (id===left? H[left].base.gy : H[right].base.gy);
+      let half = Math.round((H[right].base.gx - H[left].base.gx)/2);
+      half = Math.max(2, Math.min(3, half));
+      let cx = (id===left) ? (nx + half) : (nx - half);
+      const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + 1);
+      cx = Math.max(minIX + half, Math.min(LETTER_SPACING.I.maxX - half, cx));
+      const gxL = cx - half, gxR = cx + half;
+
+      proposed[left]  = {gx:gxL, gy:barY};
+      proposed[right] = {gx:gxR, gy:barY};
+      proposed[stem]  = {gx:cx,  gy:H[stem].base.gy};
+    };
+    proposeDriveStemFromBar('iTopL','iTopR','iTop');
+    proposeDriveStemFromBar('iBotL','iBotR','iBot');
+
+    // E spans follow left anchors, and NEVER shorter than MIN_E_SPAN
+    const proposeKeepE=(Lid,Rid,minLen)=>{
+      if(id!==Lid) return;
+      const dx=nx-base.gx;
+      const L=H[Lid], R=H[Rid];
+      let gx=R.base.gx+dx, gy=R.base.gy;
+      const required = Math.max(minLen, MIN_E_SPAN);
+      gx=Math.max(gx,(proposed[Lid]?.gx ?? L.base.gx)+required);
+      gx=Math.min(gx,LETTER_SPACING.E.maxX+E_OVERHANG);
+      gy=Math.max(0,Math.min(GRID_ROWS-1,gy));
+      proposed[Rid] = {gx,gy};
+    };
+    proposeKeepE('eLTop','eRTop',E_LEN.top);
+    proposeKeepE('eLMid','eRMid',E_LEN.mid);
+    proposeKeepE('eLBot','eRBot',E_LEN.bot);
+
+    // 1) cell occupancy check for every affected handle
+    let ok=true;
+    for(const pid in proposed){
+      const b=proposed[pid];
+      // don't collide with other letters' points
+      if(pid!==id && occ.has(keyOf(b.gx,b.gy))) { ok=false; break; }
+      if(pid===id && occ.has(keyOf(b.gx,b.gy))) { ok=false; break; }
+    }
+    if(!ok) continue;
+
+    // 2) letter-level bounding box overlap check
+    if(letterWouldOverlap(letter, proposed)) continue;
+
+    // accept: apply targets + newBase for all proposed ids
+    for(const pid in proposed){
+      const b=proposed[pid];
+      const pp=gridToPx(b.gx,b.gy);
+      H[pid].tgt.x=pp.x; H[pid].tgt.y=pp.y;
+      H[pid].newBase={gx:b.gx, gy:b.gy};
+    }
+    return;
   }
-  if(!chosen) return;
-
-  const p=gridToPx(chosen.nx,chosen.ny);
-  h.tgt.x=p.x; h.tgt.y=p.y; h.newBase={gx:chosen.nx,gy:chosen.ny};
-
-  /* I: bars drive the stem (center-locked) */
-  const driveStemFromBar = (left,right,stem)=>{
-    if(id!==left && id!==right) return;
-    const barY = (id===left? H[left].base.gy : H[right].base.gy);
-    let half = Math.round((H[right].base.gx - H[left].base.gx)/2);
-    half = Math.max(2, Math.min(3, half));
-    let cx = (id===left) ? (chosen.nx + half) : (chosen.nx - half);
-    const minIX = Math.max(LETTER_SPACING.I.minX, wRightEdge() + 1);
-    cx = Math.max(minIX + half, Math.min(LETTER_SPACING.I.maxX - half, cx));
-    const gxL = cx - half, gxR = cx + half;
-
-    const lp=gridToPx(gxL,barY), rp=gridToPx(gxR,barY), sp=gridToPx(cx, H[stem].base.gy);
-    H[left].tgt.x=lp.x; H[left].tgt.y=lp.y; H[left].newBase={gx:gxL,gy:barY};
-    H[right].tgt.x=rp.x; H[right].tgt.y=rp.y; H[right].newBase={gx:gxR,gy:barY};
-    H[stem].tgt.x=sp.x; H[stem].tgt.y=sp.y; H[stem].newBase={gx:cx,gy:H[stem].base.gy};
-  };
-  driveStemFromBar('iTopL','iTopR','iTop');
-  driveStemFromBar('iBotL','iBotR','iBot');
-
-  // E spans follow left anchors, and NEVER shorter than MIN_E_SPAN
-  const keepE=(Lid,Rid,minLen)=>{
-    if(id!==Lid) return;
-    const dx=chosen.nx-base.gx;
-    const L=H[Lid], R=H[Rid];
-    let gx=R.base.gx+dx, gy=R.base.gy;
-    const required = Math.max(minLen, MIN_E_SPAN);
-    gx=Math.max(gx,L.base.gx+required);
-    gx=Math.min(gx,LETTER_SPACING.E.maxX+E_OVERHANG);
-    gy=Math.max(0,Math.min(GRID_ROWS-1,gy));
-    if(!occupied(gx,gy)){ const pp=gridToPx(gx,gy); R.tgt.x=pp.x; R.tgt.y=pp.y; R.newBase={gx,gy}; }
-  };
-  keepE('eLTop','eRTop',E_LEN.top);
-  keepE('eLMid','eRMid',E_LEN.mid);
-  keepE('eLBot','eRBot',E_LEN.bot);
 }
 
 /* pick + move */
@@ -307,7 +397,7 @@ async function getTimeBucketFromAPI(){
   }
 }
 
-/* scheduler (every 5s) */
+/* scheduler */
 let devTimer=null;
 function startScheduler(){
   if(devTimer) clearInterval(devTimer);
@@ -316,11 +406,11 @@ function startScheduler(){
     reseed(bucket);
     retargetOnePoint();
   };
-  tick(); // do one immediately
+  tick();
   devTimer = setInterval(tick, DEV_INTERVAL_MS);
 }
 
-/* one-time random API seed to vary first layout per load */
+/* one-time random API seed */
 async function connectRandomAPI(){
   try{
     const res = await fetch('https://random-data_api.com/api/v2/users?size=1', {cache:'no-store'});
@@ -354,7 +444,7 @@ function controlForD(ax,ay,bx,by){
 }
 
 /* draw helpers */
-function drawFanTrailForSegment(aH,bH,key,kind){
+function drawFanTrailForSegment(key,kind){
   const samples = segTrail[key];
   if(!samples || samples.length<2) return;
   for(let i=0;i<samples.length-1;i++){
@@ -380,6 +470,7 @@ function setup(){
   rebuild();
   connectRandomAPI();
 }
+
 function windowResized(){
   resizeCanvas(windowWidth,windowHeight);
   computeBestScale(); offLocal=centerOffsetWithMargins(LOCAL); offCanon=centerOffsetWithMargins(CANON);
@@ -407,7 +498,7 @@ function enforceIAlignment(){
 function draw(){
   background(0);
 
-  // grid dots (now invisible)
+  // grid dots (invisible)
   noStroke(); fill(255,GRID_DOT_ALPHA);
   for(let gy=0; gy<GRID_ROWS; gy++)
     for(let gx=0; gx<GRID_COLS; gx++){
@@ -445,8 +536,7 @@ function draw(){
     if(anyMoved){
       if(!segMoving[key]) segTrail[key]=[];
       segMoving[key]=true;
-      const s = {ax:A.cur.x, ay:A.cur.y, bx:B.cur.x, by:B.cur.y};
-      segTrail[key].push(s);
+      segTrail[key].push({ax:A.cur.x, ay:A.cur.y, bx:B.cur.x, by:B.cur.y});
       if(segTrail[key].length>TRAIL_SAMPLE_CAP) segTrail[key].shift();
     }else{
       segMoving[key]=false;
@@ -457,8 +547,8 @@ function draw(){
   for(const {a,b,kind} of ARC_DRAW) touchSeg(a,b,kind);
 
   // draw trails
-  for(const [a,b] of SEG_DRAW) drawFanTrailForSegment(H[a],H[b],segKey(a,b),null);
-  for(const {a,b,kind} of ARC_DRAW) drawFanTrailForSegment(H[a],H[b],segKey(a,b),kind);
+  for(const [a,b] of SEG_DRAW) drawFanTrailForSegment(segKey(a,b),null);
+  for(const {a,b,kind} of ARC_DRAW) drawFanTrailForSegment(segKey(a,b),kind);
 
   // live skeleton
   stroke(255); strokeWeight(STROKE_W); noFill();
@@ -474,6 +564,11 @@ function draw(){
   noStroke(); fill(255,ANCHOR_ALPHA);
   for(const id in H){ const h=H[id]; circle(h.cur.x,h.cur.y,ANCHOR_SIZE); }
 }
+
+/* ===== top-right switch -> go to index4.html ===== */
+document.getElementById('toIndex4').addEventListener('change', () => {
+  window.location.href = 'index4.html';
+});
 </script>
 </body>
 </html>
